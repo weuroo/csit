@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#07111f" />
+  <title>PM Owner Passkey Enrollment</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #07111f; color: #eef7ff; display: grid; place-items: center; padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); }
+    main { width: min(560px, 100%); }
+    .eyebrow { letter-spacing: .18em; text-transform: uppercase; color: #73d8ff; font-size: 12px; font-weight: 700; }
+    .card { margin-top: 18px; background: #0d1a2c; border: 1px solid #20334a; border-radius: 24px; padding: 28px; }
+    h1 { margin: 8px 0 12px; font-size: clamp(28px, 8vw, 42px); line-height: 1.12; }
+    p { color: #a7b7ca; line-height: 1.65; font-size: 16px; }
+    .facts { margin: 22px 0; display: grid; gap: 10px; }
+    .fact { display:flex; gap:10px; align-items:flex-start; color:#c6d4e3; font-size:14px; line-height:1.5; }
+    .dot { width:8px; height:8px; border-radius:99px; background:#36c5f0; margin-top:6px; flex:none; }
+    button { width: 100%; min-height: 56px; border: 0; border-radius: 16px; padding: 14px 18px; background: #eef7ff; color: #07111f; font-size: 18px; font-weight: 800; }
+    button:disabled { opacity: .55; }
+    #status { margin-top: 18px; min-height: 52px; color: #9fb4c8; white-space: pre-wrap; line-height: 1.55; }
+    .ok { color:#6ee7b7 !important; }
+    .err { color:#fda4af !important; }
+    .small { margin-top:18px; font-size:12px; color:#6f8298; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Sovereign Owner Security Root</div>
+  <div class="card">
+    <h1>ลงทะเบียน iPhone เจ้าของระบบ</h1>
+    <p>สร้าง Passkey ด้วย Face ID/รหัสเครื่อง เพื่อให้ระบบพิสูจน์คำสั่งระดับ Owner ด้วยกุญแจเข้ารหัสจากอุปกรณ์จริง ไม่ใช่จากชื่อ ข้อความ หรือบัญชีที่อาจถูกปลอมได้</p>
+    <div class="facts">
+      <div class="fact"><span class="dot"></span><span>Private key อยู่ใน Passkey ของอุปกรณ์และไม่ถูกส่งให้ AI หรือฐานข้อมูล</span></div>
+      <div class="fact"><span class="dot"></span><span>ลิงก์เริ่มต้นใช้ได้ครั้งเดียวและมีอายุจำกัด</span></div>
+      <div class="fact"><span class="dot"></span><span>หลังลงทะเบียนยังคง SHADOW_ONLY จนกว่า Recovery + Safety Regression จะผ่าน</span></div>
+    </div>
+    <button id="enroll">ลงทะเบียนด้วย Face ID</button>
+    <div id="status"></div>
+    <div class="small">PM Agency Intelligence OS · Owner Enrollment v1 · No-overwrite deployment</div>
+  </div>
+</main>
+<script>
+const API = 'https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-owner-passkey-api';
+const button = document.getElementById('enroll');
+const statusEl = document.getElementById('status');
+const fromB64u = (s) => { s = s.replace(/-/g, '+').replace(/_/g, '/'); s += '='.repeat((4 - s.length % 4) % 4); return Uint8Array.from(atob(s), c => c.charCodeAt(0)); };
+const toB64u = (buf) => { let s = ''; new Uint8Array(buf).forEach(x => s += String.fromCharCode(x)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,''); };
+const setStatus = (txt, cls='') => { statusEl.textContent = txt; statusEl.className = cls; };
+async function post(payload) { const r = await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}); const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error || `HTTP_${r.status}`); return data; }
+button.addEventListener('click', async () => { try { button.disabled = true; if (!window.PublicKeyCredential || !navigator.credentials?.create) throw new Error('อุปกรณ์หรือ Browser นี้ไม่รองรับ Passkey/WebAuthn'); const code = new URLSearchParams(location.search).get('code'); if (!code) throw new Error('ลิงก์ Enrollment ไม่ครบ กรุณาใช้ลิงก์ที่ระบบออกให้ใหม่'); setStatus('กำลังสร้าง challenge…'); const data = await post({action:'options', code}); const o = data.options; o.challenge = fromB64u(o.challenge); o.user.id = fromB64u(o.user.id); o.excludeCredentials = (o.excludeCredentials || []).map(x => ({...x, id: fromB64u(x.id)})); setStatus('กรุณายืนยัน Face ID/รหัสเครื่อง…'); const c = await navigator.credentials.create({publicKey:o}); if (!c) throw new Error('ไม่ได้รับ Passkey credential'); const credential = { id:c.id, rawId:toB64u(c.rawId), type:c.type, response:{clientDataJSON:toB64u(c.response.clientDataJSON),attestationObject:toB64u(c.response.attestationObject),transports:c.response.getTransports?c.response.getTransports():[]}, clientExtensionResults:c.getClientExtensionResults?c.getClientExtensionResults():{}, authenticatorAttachment:c.authenticatorAttachment||null }; const verified = await post({action:'verify', code, credential}); if (!verified.ok) throw new Error('ยืนยัน Passkey ไม่สำเร็จ'); history.replaceState({}, '', location.pathname); setStatus('✅ ลงทะเบียน iPhone สำเร็จ\nระบบยังอยู่ SHADOW_ONLY จนกว่าจะผ่าน Recovery Test และ Safety Regression', 'ok'); button.style.display = 'none'; } catch(e) { setStatus('ไม่สำเร็จ: ' + (e?.message || String(e)), 'err'); button.disabled = false; } });
+</script>
+</body>
+</html>
