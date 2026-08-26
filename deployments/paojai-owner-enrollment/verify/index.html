@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#07111f">
+<title>Owner Fresh Passkey Verification</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#07111f;color:#eef7ff;display:grid;place-items:center;padding:24px 18px}.wrap{width:min(620px,100%)}.eyebrow{letter-spacing:.18em;text-transform:uppercase;color:#73d8ff;font-size:12px;font-weight:800}.card{margin-top:16px;background:#0d1a2c;border:1px solid #20334a;border-radius:24px;padding:26px}h1{margin:8px 0 12px;font-size:clamp(30px,8vw,44px);line-height:1.1}p{color:#a7b7ca;line-height:1.65}button{width:100%;min-height:58px;border:0;border-radius:16px;padding:14px 18px;background:#eef7ff;color:#07111f;font-size:18px;font-weight:800;margin-top:14px}button:disabled{opacity:.55}.status{margin-top:18px;min-height:50px;line-height:1.55;color:#a7b7ca;white-space:pre-wrap}.ok{color:#6ee7b7}.err{color:#fda4af}.warn{color:#fbbf24}.small{margin-top:20px;color:#6f8298;font-size:12px}
+</style>
+</head>
+<body><main class="wrap"><div class="eyebrow">Sovereign Owner Security Root</div><section class="card"><h1>ยืนยัน Owner ด้วย Face ID</h1><p>ขั้นตอนนี้เป็น Fresh Passkey Authentication สำหรับเลื่อนอุปกรณ์จาก <b>PENDING</b> ไป <b>TRUSTED_SHADOW</b> เท่านั้น ระบบยังไม่เปิด Enforcement จริง</p><p class="warn">ต้องทำบน iPhone ที่ลงทะเบียน Passkey เดิมไว้ Private key จะไม่ออกจากอุปกรณ์</p><button id="verify">ยืนยันด้วย Face ID</button><div id="status" class="status"></div><div class="small">PM Agency Intelligence OS · Owner Step-up v1 · additive route /verify · SHADOW_ONLY</div></section></main>
+<script type="module">
+import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-owner-passkey-api';
+const btn=document.getElementById('verify'), st=document.getElementById('status');
+const deviceId=new URLSearchParams(location.search).get('device');
+const setStatus=(t,c='')=>{st.textContent=t;st.className='status '+c};
+async function post(body){const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok||d?.ok===false)throw new Error(d?.error||`HTTP_${r.status}`);return d}
+btn.onclick=async()=>{try{btn.disabled=true;if(!deviceId)throw new Error('DEVICE_ID_MISSING');setStatus('กำลังออก one-time challenge…');const o=await post({action:'stepup-options',deviceId});setStatus('กรุณายืนยัน Face ID บนอุปกรณ์นี้…');const credential=await startAuthentication({optionsJSON:o.options});setStatus('กำลังตรวจลายเซ็น Passkey และ Recovery Gate…');const v=await post({action:'stepup-verify',deviceId,challengeId:o.challengeId,credential});if(!v?.verified||v?.trust_state!=='TRUSTED_SHADOW')throw new Error('STEPUP_NOT_CONFIRMED');history.replaceState({},'',location.pathname);btn.style.display='none';setStatus('✅ Fresh Owner Authentication ผ่าน\nอุปกรณ์ถูกเลื่อนเป็น TRUSTED_SHADOW แล้ว\nEnforcement ยังปิดอยู่จนกว่า Safety Regression จะผ่านครบ','ok')}catch(e){btn.disabled=false;setStatus('ไม่สำเร็จ: '+(e?.message||String(e)),'err')}};
+</script></body></html>
