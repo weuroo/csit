@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#07111f" />
+  <title>PM Owner Recovery Setup</title>
+  <style>
+    :root { color-scheme: dark; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:#07111f; color:#eef7ff; padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom)); display:grid; place-items:center; }
+    main { width:min(600px,100%); }
+    .eyebrow { color:#73d8ff; letter-spacing:.18em; text-transform:uppercase; font-size:12px; font-weight:800; }
+    .card { margin-top:18px; background:#0d1a2c; border:1px solid #20334a; border-radius:24px; padding:28px; }
+    h1 { font-size:clamp(28px,8vw,42px); margin:8px 0 12px; line-height:1.12; }
+    p { color:#a7b7ca; line-height:1.65; }
+    .secret { display:none; margin:20px 0; border:1px solid #3a566f; background:#081321; border-radius:16px; padding:16px; word-break:break-all; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:15px; line-height:1.6; user-select:all; }
+    .warn { color:#f7c873; font-size:14px; }
+    .ok { color:#6ee7b7 !important; }
+    .err { color:#fda4af !important; }
+    button { width:100%; min-height:56px; border:0; border-radius:16px; padding:14px 18px; background:#eef7ff; color:#07111f; font-size:17px; font-weight:800; margin-top:12px; }
+    button.secondary { background:#14253a; color:#d9e9f7; border:1px solid #2b4561; }
+    button:disabled { opacity:.5; }
+    #status { margin-top:16px; color:#9fb4c8; white-space:pre-wrap; line-height:1.55; min-height:30px; }
+    .small { margin-top:20px; color:#6f8298; font-size:12px; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Sovereign Owner Security Root</div>
+  <div class="card">
+    <h1>ตั้งค่ากู้คืน Owner</h1>
+    <p>สร้าง Recovery Secret 256-bit บนอุปกรณ์นี้โดยตรง ระบบจะเก็บเพียง hash และจะไม่รู้ secret จริงของคุณ</p>
+    <p class="warn">สำคัญ: บันทึก secret ไว้นอกระบบ เช่น Password Manager ที่คุณควบคุม หรือกระดาษเก็บในที่ปลอดภัย หากทำหาย ระบบไม่สามารถอ่านคืนจากฐานข้อมูลได้</p>
+    <button id="create">สร้าง Recovery Secret</button>
+    <div id="secret" class="secret"></div>
+    <button id="copy" class="secondary" style="display:none">คัดลอก Recovery Secret</button>
+    <button id="confirm" style="display:none">ฉันบันทึกแล้ว — ทดสอบ Recovery</button>
+    <div id="status"></div>
+    <div class="small">PM Agency Intelligence OS · Owner Recovery v1 · New isolated page</div>
+  </div>
+</main>
+<script>
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-owner-recovery-api';
+const $=id=>document.getElementById(id);
+let rawSecret='', recoveryHash='';
+const hex = b => [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
+const sha256 = async s => hex(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)));
+const setStatus=(t,c='')=>{ $('status').textContent=t; $('status').className=c; };
+async function post(body){ const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); const data=await r.json().catch(()=>({})); if(!r.ok || data?.ok===false) throw new Error(data?.error||data?.reason||`HTTP_${r.status}`); return data; }
+$('create').onclick=async()=>{ try{ const setupCode=new URLSearchParams(location.search).get('code'); if(!setupCode) throw new Error('ลิงก์ Recovery Setup ไม่ครบ'); const bytes=crypto.getRandomValues(new Uint8Array(32)); rawSecret='PMR-'+hex(bytes).match(/.{1,8}/g).join('-'); recoveryHash=await sha256(rawSecret); setStatus('กำลังลงทะเบียน hash ของ Recovery Secret…'); await post({action:'setup',setup_code:setupCode,recovery_hash:recoveryHash}); history.replaceState({},'',location.pathname); $('secret').textContent=rawSecret; $('secret').style.display='block'; $('copy').style.display='block'; $('confirm').style.display='block'; $('create').style.display='none'; setStatus('สร้างแล้ว กรุณาบันทึก Recovery Secret ก่อนทดสอบ'); }catch(e){ setStatus('ไม่สำเร็จ: '+(e?.message||String(e)),'err'); } };
+$('copy').onclick=async()=>{ try { await navigator.clipboard.writeText(rawSecret); setStatus('คัดลอกแล้ว — กรุณาเก็บในที่ปลอดภัย'); } catch { setStatus('คัดลอกอัตโนมัติไม่ได้ ให้กดค้างที่ Secret แล้ว Copy'); } };
+$('confirm').onclick=async()=>{ try{ $('confirm').disabled=true; setStatus('กำลังทดสอบ Recovery Code โดยไม่ consume…'); const data=await post({action:'test',recovery_hash:recoveryHash}); if(!data?.tested) throw new Error('RECOVERY_TEST_NOT_CONFIRMED'); setStatus('✅ Recovery Test ผ่าน\nSecret ถูกบันทึกเป็น hash เท่านั้น และยังไม่ถูกใช้', 'ok'); $('copy').style.display='none'; $('confirm').style.display='none'; }catch(e){ $('confirm').disabled=false; setStatus('ทดสอบไม่ผ่าน: '+(e?.message||String(e)),'err'); } };
+</script>
+</body>
+</html>
