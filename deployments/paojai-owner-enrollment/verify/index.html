@@ -16,4 +16,6 @@ const deviceId=new URLSearchParams(location.search).get('device');
 const setStatus=(t,c='')=>{st.textContent=t;st.className='status '+c};
 async function post(body){const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok||d?.ok===false)throw new Error(d?.error||`HTTP_${r.status}`);return d}
 btn.onclick=async()=>{try{btn.disabled=true;if(!deviceId)throw new Error('DEVICE_ID_MISSING');setStatus('กำลังออก one-time challenge…');const o=await post({action:'stepup-options',deviceId});setStatus('กรุณายืนยัน Face ID บนอุปกรณ์นี้…');const credential=await startAuthentication({optionsJSON:o.options});setStatus('กำลังตรวจลายเซ็น Passkey และ Recovery Gate…');const v=await post({action:'stepup-verify',deviceId,challengeId:o.challengeId,credential});if(!v?.verified||v?.trust_state!=='TRUSTED_SHADOW')throw new Error('STEPUP_NOT_CONFIRMED');history.replaceState({},'',location.pathname);btn.style.display='none';setStatus('✅ Fresh Owner Authentication ผ่าน\nอุปกรณ์ถูกเลื่อนเป็น TRUSTED_SHADOW แล้ว\nEnforcement ยังปิดอยู่จนกว่า Safety Regression จะผ่านครบ','ok')}catch(e){btn.disabled=false;setStatus('ไม่สำเร็จ: '+(e?.message||String(e)),'err')}};
-</script></body></html>
+</script>
+<!-- controlled redeploy marker: 2026-08-26T23:59+07 -->
+</body></html>
