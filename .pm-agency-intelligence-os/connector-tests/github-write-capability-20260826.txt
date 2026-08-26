@@ -1,0 +1,7 @@
+PM Agency Intelligence OS
+GitHub Connector Write Capability Test
+Date: 2026-08-26
+Scope: isolated branch only
+Branch: ops/github-connector-write-test-20260826
+No production/default-branch files modified.
+Purpose: verify least-privilege GitHub connector write capability.
