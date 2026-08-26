@@ -7,6 +7,8 @@ Rules:
 - Never overwrite existing Vercel projects by default.
 - Each Vercel project must use its own Root Directory.
 - Existing root `index.html` and `README.md` are out of scope and must remain untouched.
+- Source promotion to the default branch is allowed only when the change is additive-only and root collision = 0.
+- Production binding/deployment is a separate gate and still requires Project / Domain / Root Directory collision checks.
 
 ## Projects
 
@@ -18,4 +20,6 @@ Purpose: Owner Passkey / Face ID enrollment.
 Root Directory: `deployments/paojai-owner-recovery`
 Purpose: Owner Recovery setup and test.
 
-Promotion rule: merge or deploy only after target project/domain/root-directory collision checks pass.
+Promotion state:
+- Source structure: eligible after additive-only + root-collision checks pass.
+- Production bind/deploy: blocked until the specific Vercel project/domain/root-directory target is verified.
