@@ -1,0 +1,29 @@
+-- PRE-STAGED ONLY. DO NOT EXECUTE DURING FEATURE FREEZE.
+-- Run after post-freeze implementation is applied, before requesting Owner Passkey.
+
+select jsonb_build_object(
+  'preflight', public.pm_internet_pilot_preflight_readiness_v2(),
+  'post_freeze', public.pm_internet_post_freeze_implementation_readiness_v1(),
+  'contracts', public.pm_internet_post_freeze_contract_validation_v1(),
+  'authority', public.pm_internet_authority_surface_regression_v1(),
+  'activation', public.pm_internet_transport_proof_activation_gate_v1(),
+  'concurrency', public.pm_internet_proof_lane_concurrency_readiness_v1(),
+  'atomic_shadow', public.pm_internet_atomic_reservation_shadow_regression_v1(),
+  'failure_policy', public.pm_internet_failed_request_slot_policy_shadow_regression_v1(),
+  'transaction_plan', public.pm_internet_activation_transaction_plan_v1()
+) as mission18_post_apply_verification;
+
+-- Required interpretation before Owner Passkey:
+-- 1. Feature Freeze / Stabilization Exit gate must be clear.
+-- 2. contract validation: missing_count=0, privilege_fail_count=0, passed=true.
+-- 3. authority surface: passed=true, exposed/unexpected arrays empty.
+-- 4. technical_implementation_complete=true.
+-- 5. concurrency readiness must pass only after Production atomic reservation exists AND direct simultaneous-caller proof is recorded.
+-- 6. owner_action_required_now=true only after all technical gates are ready.
+-- 7. Gateway must still have general production_network_enabled=false.
+-- 8. No active proof grant and no proof request before fresh Owner Passkey / VERIFIED v3 command.
+
+-- After the one real proof request, rerun Central/Action/Guardian, authority, contract,
+-- concurrency/failure-policy and Recovery/Kill-Switch checks. Completion requires
+-- exactly one reserved request, network_request_performed=true, valid bounded response,
+-- direct DNS/redirect evidence, relock and revoke/expire success.
