@@ -1,0 +1,67 @@
+-- PRE-STAGED ONLY. SAFE AS READ-ONLY VERIFICATION AFTER POST-FREEZE APPLY.
+-- Purpose: detect target/function/authority drift before requesting fresh Owner Passkey.
+
+select jsonb_build_object(
+  'canonical_target', 'https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect',
+  'lane_target', (
+    select fixed_target_url from public.pm_internet_transport_proof_lane_v1
+    where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+  ),
+  'lane_exact_match', coalesce((
+    select fixed_target_url='https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect'
+    from public.pm_internet_transport_proof_lane_v1
+    where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+  ),false),
+  'functions', jsonb_build_object(
+    'bounded_unlock', to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)') is not null,
+    'command_bound_grant', to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)') is not null,
+    'reserve', to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is not null,
+    'finalize', to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)') is not null
+  ),
+  'service_role_only', jsonb_build_object(
+    'bounded_unlock', case when to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') end,
+    'command_bound_grant', case when to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') end
+  ),
+  'gateway_fail_closed', (
+    select jsonb_build_object(
+      'owner_lockdown_active',owner_lockdown_active,
+      'production_network_enabled',production_network_enabled,
+      'mode',mode,
+      'pass',owner_lockdown_active=true and production_network_enabled=false and mode='SHADOW_ONLY'
+    )
+    from public.pm_owner_internet_gateway_control_shadow_v1
+    where control_key='CONTROLLED_INTERNET_GATEWAY'
+  ),
+  'active_public_read_grants', (
+    select count(*) from public.pm_agent_capability_grants_v1
+    where grantee_agent_key='PAOJAI_OPERATIONS_AI'
+      and 'PUBLIC_READ'=any(allowed_actions)
+      and status='ACTIVE'
+      and (expires_at is null or expires_at>now())
+  ),
+  'proof_lane_pristine', (
+    select enabled=false and network_request_count=0 and proof_completed=false and max_requests=1
+    from public.pm_internet_transport_proof_lane_v1
+    where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+  ),
+  'network_request_performed',false,
+  'production_mutation',false,
+  'authority_expansion',false
+) as mission18_cross_binding_verification;
+
+-- PASS BEFORE OWNER PASSKEY:
+-- lane_exact_match=true
+-- all four canonical functions present
+-- mutation functions service-role-only
+-- gateway_fail_closed.pass=true
+-- active_public_read_grants=0
+-- proof_lane_pristine=true
+-- final proof target and Owner approval payload must match canonical_target exactly
