@@ -2,9 +2,9 @@
 -- Mission #18 post-freeze implementation blueprint.
 -- Re-check live schema + Operating Manual before activation.
 
--- Canonical PM-owned deterministic target after reviewed binding:
--- https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect
--- Expected: same-host HTTPS 302 -> /api/internet-proof-final -> 200.
+-- Canonical exact proof target:
+-- https://example.com/
+-- Same-host HTTPS redirects are allowed up to 3, but a redirect is not required for success.
 
 -- Expected Production objects after Stabilization Exit:
 --   pm_internet_transport_proof_bounded_unlock_v1(uuid)
@@ -12,7 +12,7 @@
 --   pm_internet_transport_proof_reserve_request_v1(uuid,uuid)
 --   pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)
 
--- Common command invariant:
+-- Common Owner command invariant:
 -- verification_state='VERIFIED'
 -- command_type='GRANT_CAPABILITY'
 -- action_scope='PUBLIC_READ'
@@ -20,23 +20,25 @@
 -- signature_algorithm='WEBAUTHN_ASSERTION_VERIFIED_SERVER_SIDE'
 -- auth_age_seconds <= 60
 -- canonical_payload.activation_scope='TRANSPORT_PROOF_SINGLE_REQUEST'
--- canonical_payload.transport_proof_target_url='https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect'
+-- canonical_payload.transport_proof_target_url='https://example.com/'
 -- canonical_payload.transport_proof_max_requests=1
 -- canonical_payload.authorize_owner_lockdown_release_for_transport_proof_only=true
 -- canonical_payload.owner_lockdown_release_max_seconds <=120
 -- canonical_payload.general_production_network_authorized=false
 -- consumed nonce + allowed Owner gateway audit must match exact command.
+-- Never accept caller-supplied signature_verified as authority.
 
 -- 1) BOUNDED UNLOCK
 -- SECURITY DEFINER; service_role only; exact VERIFIED v3 command.
 -- Lock gateway row FOR UPDATE, re-check Stabilization Exit + Owner intent,
 -- require production_network_enabled=false, set only proof-scoped owner_lockdown_active=false,
--- write source_command_id + unlock_expires_at <=120s, and arm the one-request lane.
+-- write source_command_id + unlock_expires_at <=120s.
+-- Approval endpoint itself must NOT unlock, create grant, enable lane, or enable network.
 
 -- 2) COMMAND-BOUND PILOT GRANT
 -- SECURITY DEFINER; service_role only; exact same command.
 -- PAOJAI_OPERATIONS_AI / PUBLIC_READ / LOW / can_delegate=false / <=10 minutes.
--- allowed_resources must contain only the exact canonical target and explicit false flags for
+-- allowed_resources.fixed_target_url must equal exactly https://example.com/ and explicit false flags for
 -- credentials/download/code_execution/external_side_effects/protected_data_egress/cross_client_context.
 -- Duplicate-check source_command_id; no second live grant.
 
@@ -45,16 +47,29 @@
 -- Input request_token + command_id.
 -- One atomic conditional mutation, request-token unique ledger, max_requests=1,
 -- reservation before DNS/network, NO AUTORELEASE after acquisition.
+-- FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE: any failed attempt still consumes the slot.
 
 -- 4) IDEMPOTENT FINALIZE
 -- SECURITY DEFINER; service_role only.
--- Finalize request token once; never decrement consumed slot or reopen lane.
--- Persist DNS/redirect evidence only from direct runtime evidence.
+-- Finalize request token once; duplicate finalize returns existing terminal outcome.
+-- Never decrement consumed slot or reopen lane.
+-- Persist DNS/connect-time/redirect/runtime evidence only from direct executor evidence.
 -- Always disable proof lane, relock Owner gateway, keep production_network_enabled=false,
 -- revoke/expire exact command-bound grant, audit outcome.
 
+-- 5) ATTESTED EXECUTOR PROMOTION
+-- Separate proof-only executor artifact, verify_jwt=true, reviewed exact bytes + SHA-256.
+-- Promotion verifier must fully pass before bounded grant creation.
+-- Executor enforces TLS hostname verification, pinned public IP, DNS revalidation, same-host HTTPS redirects <=3,
+-- timeout <=10s, response <=1MiB, no credentials/client/protected data, no side effects.
+
+-- 6) SEPARATE PROOF-ONLY NETWORK ARTIFACT
+-- Network-capable code remains isolated from general Production network authority.
+-- It can execute only after exact command, bounded unlock, exact bounded grant, activation gate, and atomic reservation.
+-- General production_network_enabled remains false throughout.
+
 -- TARGET BINDING MUST BE ATOMIC ACROSS:
--- lane.fixed_target_url
+-- lane.fixed_target_url = 'https://example.com/'
 -- Owner Passkey canonical payload
 -- activation gate exact-target comparison
 -- verified-command helper exact-target comparison
@@ -63,18 +78,17 @@
 -- proof executor TARGET
 -- artifact attestation/hash/review
 -- Mission Control readiness display/tests
--- No fallback to example.com, aliases, wildcards, caller-supplied URLs, or cross-host redirects.
+-- No aliases, wildcards, caller-supplied URLs, or cross-host redirects.
 
 -- PRIVILEGES
 -- REVOKE ALL FROM PUBLIC, anon, authenticated for all mutation functions.
 -- GRANT EXECUTE only to service_role.
 
--- POST-APPLY MANDATORY CHECKS
--- canonical-name readiness v3
--- cross-binding verifier
+-- POST-APPLY MANDATORY CHECKS AFTER EACH IMPLEMENTATION STEP
 -- implementation contract validation
 -- authority-surface regression
 -- Central / Action / Guardian Safety Regression
--- runtime atomic/concurrency proof before network
+-- concurrency readiness + failed-request-slot policy
 -- Recovery/Kill-Switch regression
--- no network request until all mandatory gates pass and fresh Owner Passkey is verified.
+-- runtime concurrency harness as soon as Production atomic reservation exists: exactly one winner, zero DNS/network side effect.
+-- no real network request until all technical gates pass and fresh Owner Passkey is verified.
