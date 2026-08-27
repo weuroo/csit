@@ -1,5 +1,9 @@
 {
   "cleanUrls": true,
+  "rewrites": [
+    { "source": "/internet-live", "destination": "/internet-live-v2/" },
+    { "source": "/internet-live/", "destination": "/internet-live-v2/" }
+  ],
   "headers": [
     {
       "source": "/(.*)",
