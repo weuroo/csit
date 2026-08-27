@@ -2,13 +2,13 @@
 -- Purpose: detect target/function/authority drift before requesting fresh Owner Passkey.
 
 select jsonb_build_object(
-  'canonical_target', 'https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect',
+  'canonical_target', 'https://example.com/',
   'lane_target', (
     select fixed_target_url from public.pm_internet_transport_proof_lane_v1
     where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
   ),
   'lane_exact_match', coalesce((
-    select fixed_target_url='https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect'
+    select fixed_target_url='https://example.com/'
     from public.pm_internet_transport_proof_lane_v1
     where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
   ),false),
@@ -28,7 +28,17 @@ select jsonb_build_object(
       not has_function_privilege('anon',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
       not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
       not has_function_privilege('public',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
-      has_function_privilege('service_role',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') end
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') end,
+    'reserve', case when to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') end,
+    'finalize', case when to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') end
   ),
   'gateway_fail_closed', (
     select jsonb_build_object(
@@ -48,7 +58,7 @@ select jsonb_build_object(
       and (expires_at is null or expires_at>now())
   ),
   'proof_lane_pristine', (
-    select enabled=false and network_request_count=0 and proof_completed=false and max_requests=1
+    select enabled=false and network_request_count=0 and proof_completed=false and max_requests=1 and fixed_target_url='https://example.com/'
     from public.pm_internet_transport_proof_lane_v1
     where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
   ),
@@ -60,7 +70,7 @@ select jsonb_build_object(
 -- PASS BEFORE OWNER PASSKEY:
 -- lane_exact_match=true
 -- all four canonical functions present
--- mutation functions service-role-only
+-- all four mutation functions service-role-only
 -- gateway_fail_closed.pass=true
 -- active_public_read_grants=0
 -- proof_lane_pristine=true
