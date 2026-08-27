@@ -24,8 +24,10 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-AGENT_VERSION = "0.1.0-shadow"
+AGENT_VERSION = "0.1.1-shadow"
 DEFAULT_ALLOWED_HOST = "bvnmwfhqgdevupvcqqyl.supabase.co"
+DEFAULT_ALLOWED_PATH = "/functions/v1/pm-computer-executor-shadow"
+DEFAULT_ENDPOINT = f"https://{DEFAULT_ALLOWED_HOST}{DEFAULT_ALLOWED_PATH}"
 
 
 def b64u(data: bytes) -> str:
@@ -100,11 +102,15 @@ def validate_endpoint(endpoint: str) -> str:
         raise ValueError("Shadow endpoint must use HTTPS")
     if not parsed.hostname or parsed.hostname.lower() != allowed_host:
         raise ValueError(f"Endpoint host is not allowlisted: expected {allowed_host}")
+    if parsed.port not in (None, 443):
+        raise ValueError("Shadow endpoint may only use the default HTTPS port")
+    if parsed.path != DEFAULT_ALLOWED_PATH or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError(f"Shadow endpoint path must be exactly {DEFAULT_ALLOWED_PATH}")
     return endpoint
 
 
 def canonical_bytes(payload: dict) -> bytes:
-    return json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode("utf-8")
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode("utf-8")
 
 
 def make_heartbeat(key: Ed25519PrivateKey) -> dict:
@@ -135,18 +141,24 @@ def make_heartbeat(key: Ed25519PrivateKey) -> dict:
 
 def heartbeat_once() -> int:
     assert_shadow_safe()
-    endpoint = os.environ.get("PM_COMPUTER_SHADOW_ENDPOINT", "").strip()
-    if not endpoint:
-        print("PM_COMPUTER_SHADOW_ENDPOINT is not configured; no network request sent.", file=sys.stderr)
-        return 2
+    endpoint = os.environ.get("PM_COMPUTER_SHADOW_ENDPOINT", DEFAULT_ENDPOINT).strip()
     endpoint = validate_endpoint(endpoint)
     key = load_or_create_key()
     envelope = make_heartbeat(key)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": f"paojai-computer-shadow/{AGENT_VERSION}",
+    }
+    enrollment_token = os.environ.get("PM_COMPUTER_SHADOW_ENROLLMENT_TOKEN", "").strip()
+    if enrollment_token:
+        if not (24 <= len(enrollment_token) <= 512):
+            raise ValueError("Enrollment token length is invalid")
+        headers["x-pm-shadow-enrollment"] = enrollment_token
     request = urllib.request.Request(
         endpoint,
         data=canonical_bytes(envelope),
         method="POST",
-        headers={"Content-Type": "application/json", "User-Agent": f"paojai-computer-shadow/{AGENT_VERSION}"},
+        headers=headers,
     )
     with urllib.request.urlopen(request, timeout=5) as response:
         data = response.read(64 * 1024)
@@ -181,7 +193,8 @@ def status() -> int:
         "mode": "SHADOW",
         "identity_initialized": key_path().exists(),
         "emergency_stop_active": estop_path().exists(),
-        "network_endpoint_configured": bool(os.environ.get("PM_COMPUTER_SHADOW_ENDPOINT", "").strip()),
+        "network_endpoint": os.environ.get("PM_COMPUTER_SHADOW_ENDPOINT", DEFAULT_ENDPOINT).strip(),
+        "enrollment_token_present": bool(os.environ.get("PM_COMPUTER_SHADOW_ENROLLMENT_TOKEN", "").strip()),
         "execution_authority": False,
         "supported_operations": ["init", "heartbeat-once", "status", "estop"],
     }, indent=2))
