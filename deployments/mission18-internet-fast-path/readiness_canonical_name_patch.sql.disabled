@@ -1,0 +1,87 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Fixes canonical naming mismatch in post-freeze readiness reporting.
+-- Authority is unchanged; this is read-only readiness semantics.
+
+begin;
+
+create or replace function public.pm_internet_post_freeze_implementation_readiness_v3()
+returns jsonb
+language plpgsql
+stable
+set search_path='public','pg_temp'
+as $$
+declare
+  pre jsonb := public.pm_internet_pilot_preflight_readiness_v2();
+  conc jsonb := public.pm_internet_proof_lane_concurrency_readiness_v1();
+  auth jsonb := public.pm_internet_authority_surface_regression_v1();
+  act jsonb := public.pm_internet_transport_proof_activation_gate_v1();
+  wait_gaps text[] := array[]::text[];
+  impl_gaps text[] := array[]::text[];
+  runtime_gaps text[] := array[]::text[];
+  human_gates text[] := array[]::text[];
+  has_unlock boolean;
+  has_grant boolean;
+  has_reserve boolean;
+  has_finalize boolean;
+  att record;
+  verified_cmds bigint;
+  tech_ready boolean;
+begin
+  if coalesce((pre#>>'{stabilization,status}')='active',true)
+     or coalesce((pre#>>'{stabilization,feature_freeze}')::boolean,true)
+     or not coalesce((pre#>>'{stabilization,autonomy_expansion_allowed}')::boolean,false) then
+    wait_gaps := array_append(wait_gaps,'STABILIZATION_EXIT_GATE');
+  end if;
+
+  select count(*) into verified_cmds
+  from public.pm_signed_owner_commands_v1
+  where verification_state='VERIFIED' and expires_at>now();
+  if verified_cmds=0 then human_gates:=array_append(human_gates,'OWNER_PASSKEY_COMMAND_REQUIRED_AFTER_TECH_READY'); end if;
+
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_transport_proof_bounded_unlock_v1') into has_unlock;
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_create_command_bound_pilot_grant_v1') into has_grant;
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_transport_proof_reserve_request_v1') into has_reserve;
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_transport_proof_finalize_request_v1') into has_finalize;
+
+  if not has_unlock then impl_gaps:=array_append(impl_gaps,'BOUNDED_UNLOCK_IMPLEMENTATION_MISSING'); end if;
+  if not has_grant then impl_gaps:=array_append(impl_gaps,'COMMAND_BOUND_BOUNDED_GRANT_CREATION_MISSING'); end if;
+  if not has_reserve then impl_gaps:=array_append(impl_gaps,'PRODUCTION_ATOMIC_REQUEST_RESERVATION_MISSING'); end if;
+  if not has_finalize then impl_gaps:=array_append(impl_gaps,'IDEMPOTENT_REQUEST_FINALIZE_MISSING'); end if;
+
+  select function_version,source_sha256,review_state,network_compiletime_enabled into att
+  from public.pm_internet_executor_release_artifact_attestation_v1
+  where artifact_key='CONTROLLED_INTERNET_EXECUTOR_CANDIDATE';
+  if not found then impl_gaps:=array_append(impl_gaps,'EXECUTOR_ARTIFACT_ATTESTATION_MISSING');
+  else
+    if att.review_state<>'APPROVED_FOR_PILOT' then impl_gaps:=array_append(impl_gaps,'EXECUTOR_ARTIFACT_PROMOTION_PENDING'); end if;
+    if not coalesce(att.network_compiletime_enabled,false) then impl_gaps:=array_append(impl_gaps,'NETWORK_ENABLED_PROOF_ARTIFACT_NOT_DEPLOYED'); end if;
+  end if;
+
+  if not coalesce((conc->>'passed')::boolean,false) then runtime_gaps:=array_append(runtime_gaps,'RUNTIME_CONCURRENCY_PROOF_PENDING'); end if;
+  if 'DNS_REBINDING_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then runtime_gaps:=array_append(runtime_gaps,'DNS_REBINDING_CONNECT_TIME_PROOF_PENDING'); end if;
+  if 'REDIRECT_REVALIDATION_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then runtime_gaps:=array_append(runtime_gaps,'REDIRECT_CONNECT_TIME_PROOF_PENDING'); end if;
+
+  tech_ready:=cardinality(wait_gaps)=0 and cardinality(impl_gaps)=0 and coalesce((auth->>'passed')::boolean,false);
+
+  return jsonb_build_object(
+    'mode','READ_ONLY_POST_FREEZE_READINESS_V3_CANONICAL_NAMES',
+    'technical_implementation_complete',tech_ready,
+    'owner_action_required_now',tech_ready and verified_cmds=0,
+    'owner_action_already_satisfied',tech_ready and verified_cmds>0,
+    'wait_gaps',to_jsonb(wait_gaps),
+    'implementation_gaps',to_jsonb(impl_gaps),
+    'human_gates',to_jsonb(human_gates),
+    'runtime_proof_gaps',to_jsonb(runtime_gaps),
+    'canonical_grant_function','pm_internet_create_command_bound_pilot_grant_v1',
+    'activation_gate',act,
+    'production_mutation',false,
+    'authority_expansion',false,
+    'network_request_performed',false
+  );
+end;
+$$;
+
+revoke all on function public.pm_internet_post_freeze_implementation_readiness_v3() from public, anon, authenticated;
+grant execute on function public.pm_internet_post_freeze_implementation_readiness_v3() to service_role;
+
+commit;
