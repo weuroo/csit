@@ -26,10 +26,18 @@ requireText("next.protocol!=='https:'||next.hostname.toLowerCase()!==current.hos
 requireText('slotRemainsConsumed:true','FAILED_SLOT_CONSUMED');
 requireText('retryRequiresFreshReviewAndOwnerApproval:true','FAILED_RETRY_REQUIRES_FRESH_OWNER');
 requireText('can_delegate','DELEGATION_CHECK');
+requireText("socket.once('connect'",'REAL_TCP_CONNECT_EVIDENCE');
+requireText('preferredValidatedIp','VALIDATED_IPV4_PREFERRED_WITH_FALLBACK');
+requireText('redirect_revalidation_required:redirectObserved','REDIRECT_REQUIREMENT_EXPLICIT');
+requireText('redirect_revalidation_satisfied:redirectSatisfied','REDIRECT_SATISFACTION_EXPLICIT');
+requireText('network_request_performed:networkPerformed','NETWORK_EVIDENCE_EXPLICIT');
+requireText("redirectConnectTimeVerified=false",'NO_PRESET_REDIRECT_CONNECT_PROOF');
 forbidText('paojai-mission-control-hub.vercel.app/api/internet-proof-redirect','OLD_PM_TARGET');
 forbidText('EXPECTED_REDIRECT_PATH','MANDATORY_REDIRECT_ASSUMPTION');
 forbidText("url=String(body.url",'CALLER_URL_PARSE');
 forbidText('production_network_enabled&&','GENERAL_NETWORK_ENABLE_DEPENDENCY');
+forbidText('redirectObserved?true:true','FABRICATED_REDIRECT_CONNECT_EVIDENCE');
+forbidText('networkPerformed=true;\n\n      if(result.status','POST_RESPONSE_ONLY_NETWORK_EVIDENCE');
 
 const result={passed:failures.length===0,canonicalTarget:CANONICAL,files,sha256:{executor:sha256(src.executor)},failures};
 console.log(JSON.stringify(result,null,2));
