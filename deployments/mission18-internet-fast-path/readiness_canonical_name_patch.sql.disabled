@@ -1,6 +1,6 @@
 -- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
--- Fixes canonical naming mismatch in post-freeze readiness reporting.
--- Authority is unchanged; this is read-only readiness semantics.
+-- Canonical post-freeze readiness semantics for Mission #18.
+-- Authority is unchanged; this function is read-only and must not substitute for Owner approval.
 
 begin;
 
@@ -14,6 +14,7 @@ declare
   pre jsonb := public.pm_internet_pilot_preflight_readiness_v2();
   conc jsonb := public.pm_internet_proof_lane_concurrency_readiness_v1();
   auth jsonb := public.pm_internet_authority_surface_regression_v1();
+  contracts jsonb := public.pm_internet_post_freeze_contract_validation_v1();
   act jsonb := public.pm_internet_transport_proof_activation_gate_v1();
   wait_gaps text[] := array[]::text[];
   impl_gaps text[] := array[]::text[];
@@ -23,9 +24,12 @@ declare
   has_grant boolean;
   has_reserve boolean;
   has_finalize boolean;
-  att record;
+  candidate record;
+  proof_artifact record;
   verified_cmds bigint;
-  tech_ready boolean;
+  implementation_complete boolean;
+  pre_owner_gates_pass boolean;
+  tech_ready_for_owner boolean;
 begin
   if coalesce((pre#>>'{stabilization,status}')='active',true)
      or coalesce((pre#>>'{stabilization,feature_freeze}')::boolean,true)
@@ -35,8 +39,14 @@ begin
 
   select count(*) into verified_cmds
   from public.pm_signed_owner_commands_v1
-  where verification_state='VERIFIED' and expires_at>now();
-  if verified_cmds=0 then human_gates:=array_append(human_gates,'OWNER_PASSKEY_COMMAND_REQUIRED_AFTER_TECH_READY'); end if;
+  where verification_state='VERIFIED'
+    and expires_at>now()
+    and command_type='GRANT_CAPABILITY'
+    and action_scope='PUBLIC_READ'
+    and canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'
+    and canonical_payload->>'transport_proof_target_url'='https://example.com/'
+    and coalesce((canonical_payload->>'transport_proof_max_requests')::int,0)=1
+    and coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false;
 
   select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_transport_proof_bounded_unlock_v1') into has_unlock;
   select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_create_command_bound_pilot_grant_v1') into has_grant;
@@ -48,30 +58,64 @@ begin
   if not has_reserve then impl_gaps:=array_append(impl_gaps,'PRODUCTION_ATOMIC_REQUEST_RESERVATION_MISSING'); end if;
   if not has_finalize then impl_gaps:=array_append(impl_gaps,'IDEMPOTENT_REQUEST_FINALIZE_MISSING'); end if;
 
-  select function_version,source_sha256,review_state,network_compiletime_enabled into att
+  select function_slug,function_version,source_sha256,review_state,network_compiletime_enabled into candidate
   from public.pm_internet_executor_release_artifact_attestation_v1
   where artifact_key='CONTROLLED_INTERNET_EXECUTOR_CANDIDATE';
-  if not found then impl_gaps:=array_append(impl_gaps,'EXECUTOR_ARTIFACT_ATTESTATION_MISSING');
-  else
-    if att.review_state<>'APPROVED_FOR_PILOT' then impl_gaps:=array_append(impl_gaps,'EXECUTOR_ARTIFACT_PROMOTION_PENDING'); end if;
-    if not coalesce(att.network_compiletime_enabled,false) then impl_gaps:=array_append(impl_gaps,'NETWORK_ENABLED_PROOF_ARTIFACT_NOT_DEPLOYED'); end if;
+  if not found or candidate.review_state<>'APPROVED_FOR_PILOT' then
+    impl_gaps:=array_append(impl_gaps,'EXECUTOR_ARTIFACT_PROMOTION_PENDING');
   end if;
 
-  if not coalesce((conc->>'passed')::boolean,false) then runtime_gaps:=array_append(runtime_gaps,'RUNTIME_CONCURRENCY_PROOF_PENDING'); end if;
-  if 'DNS_REBINDING_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then runtime_gaps:=array_append(runtime_gaps,'DNS_REBINDING_CONNECT_TIME_PROOF_PENDING'); end if;
-  if 'REDIRECT_REVALIDATION_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then runtime_gaps:=array_append(runtime_gaps,'REDIRECT_CONNECT_TIME_PROOF_PENDING'); end if;
+  select function_slug,function_version,source_sha256,review_state,network_compiletime_enabled into proof_artifact
+  from public.pm_internet_executor_release_artifact_attestation_v1
+  where artifact_key='CONTROLLED_INTERNET_EXECUTOR_PROOF';
+  if not found
+     or proof_artifact.function_slug<>'pm-controlled-internet-executor-proof'
+     or proof_artifact.review_state<>'APPROVED_FOR_PILOT'
+     or not coalesce(proof_artifact.network_compiletime_enabled,false) then
+    impl_gaps:=array_append(impl_gaps,'NETWORK_ENABLED_PROOF_ARTIFACT_NOT_DEPLOYED');
+  end if;
 
-  tech_ready:=cardinality(wait_gaps)=0 and cardinality(impl_gaps)=0 and coalesce((auth->>'passed')::boolean,false);
+  -- Concurrency is a pre-Owner technical gate because the runtime harness must prove exactly one winner
+  -- with zero DNS/network side effect before asking the human to approve the real proof.
+  if not coalesce((conc->>'passed')::boolean,false) then
+    runtime_gaps:=array_append(runtime_gaps,'RUNTIME_CONCURRENCY_PROOF_PENDING');
+  end if;
+
+  -- These two evidence classes are generated by the one real bounded proof and gate completion, not Owner approval.
+  if 'DNS_REBINDING_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then
+    runtime_gaps:=array_append(runtime_gaps,'DNS_REBINDING_CONNECT_TIME_PROOF_PENDING');
+  end if;
+  if 'REDIRECT_REVALIDATION_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then
+    runtime_gaps:=array_append(runtime_gaps,'REDIRECT_CONNECT_TIME_PROOF_PENDING');
+  end if;
+
+  implementation_complete := cardinality(wait_gaps)=0 and cardinality(impl_gaps)=0;
+  pre_owner_gates_pass :=
+    coalesce((contracts->>'passed')::boolean,false)
+    and coalesce((auth->>'passed')::boolean,false)
+    and coalesce((conc->>'passed')::boolean,false);
+  tech_ready_for_owner := implementation_complete and pre_owner_gates_pass;
+
+  if tech_ready_for_owner and verified_cmds=0 then
+    human_gates:=array_append(human_gates,'OWNER_PASSKEY_COMMAND_REQUIRED_NOW');
+  elsif not tech_ready_for_owner and verified_cmds=0 then
+    human_gates:=array_append(human_gates,'OWNER_PASSKEY_COMMAND_REQUIRED_AFTER_TECH_READY');
+  end if;
 
   return jsonb_build_object(
     'mode','READ_ONLY_POST_FREEZE_READINESS_V3_CANONICAL_NAMES',
-    'technical_implementation_complete',tech_ready,
-    'owner_action_required_now',tech_ready and verified_cmds=0,
-    'owner_action_already_satisfied',tech_ready and verified_cmds>0,
+    'technical_implementation_complete',implementation_complete,
+    'pre_owner_contract_passed',coalesce((contracts->>'passed')::boolean,false),
+    'pre_owner_authority_passed',coalesce((auth->>'passed')::boolean,false),
+    'pre_owner_concurrency_passed',coalesce((conc->>'passed')::boolean,false),
+    'pre_owner_gates_passed',pre_owner_gates_pass,
+    'owner_action_required_now',tech_ready_for_owner and verified_cmds=0,
+    'owner_action_already_satisfied',tech_ready_for_owner and verified_cmds>0,
     'wait_gaps',to_jsonb(wait_gaps),
     'implementation_gaps',to_jsonb(impl_gaps),
     'human_gates',to_jsonb(human_gates),
     'runtime_proof_gaps',to_jsonb(runtime_gaps),
+    'canonical_target','https://example.com/',
     'canonical_grant_function','pm_internet_create_command_bound_pilot_grant_v1',
     'activation_gate',act,
     'production_mutation',false,
@@ -85,3 +129,9 @@ revoke all on function public.pm_internet_post_freeze_implementation_readiness_v
 grant execute on function public.pm_internet_post_freeze_implementation_readiness_v3() to service_role;
 
 commit;
+
+-- Mandatory interpretation:
+-- * owner_action_required_now=true ONLY after Stabilization Exit, all six implementation gaps are closed,
+--   contract validation passed, authority surface passed, and runtime concurrency harness passed.
+-- * DNS/redirect runtime evidence is intentionally not a pre-Owner gate; it is produced by the single real proof.
+-- * No verified command, unlock, grant, reservation or network action is created by this read-only function.
