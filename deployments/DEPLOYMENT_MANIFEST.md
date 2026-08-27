@@ -20,6 +20,12 @@ Purpose: Owner Passkey / Face ID enrollment.
 Root Directory: `deployments/paojai-owner-recovery`
 Purpose: Owner Recovery setup and test.
 
+### paojai-mission-control-hub
+Root Directory: `deployments/paojai-mission-control-hub`
+Purpose: Read-only portfolio for every current and future AI mission, with one mission view per mission in a single-page interface.
+Backend: Supabase Edge Function `pm-mission-control-data` (read-only, monitor-token authenticated).
+Deployment rule: NEW Vercel project only. Never bind to an existing Vercel project.
+
 Promotion state:
 - Source structure: eligible after additive-only + root-collision checks pass.
 - Production bind/deploy: blocked until the specific Vercel project/domain/root-directory target is verified.
