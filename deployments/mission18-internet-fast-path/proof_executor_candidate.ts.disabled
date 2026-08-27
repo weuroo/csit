@@ -30,7 +30,13 @@ async function stablePublicDns(host:string){
   return b;
 }
 
-function pinnedGet(url:URL,ip:string,remainingMs:number){
+function preferredValidatedIp(ips:string[]){
+  // Prefer validated IPv4 for first-proof reachability; fall back to validated IPv6 only when no IPv4 exists.
+  const v4=ips.find(ip=>family(ip)===4);
+  return v4||ips[0];
+}
+
+function pinnedGet(url:URL,ip:string,remainingMs:number,onTcpConnect:()=>void){
   return new Promise<{status:number,location?:string,bytes:number}>((resolve,reject)=>{
     if(remainingMs<=0) return reject(new Error('TIMEOUT_FULL_PROOF'));
     let total=0,settled=false;
@@ -38,6 +44,10 @@ function pinnedGet(url:URL,ip:string,remainingMs:number){
       res.on('data',(c:Buffer)=>{total+=c.length;if(total>MAX_BYTES)req.destroy(new Error('RESPONSE_TOO_LARGE'))});
       res.on('end',()=>{if(!settled){settled=true;clearTimeout(timer);const loc=Array.isArray(res.headers.location)?res.headers.location[0]:res.headers.location;resolve({status:res.statusCode||0,location:loc,bytes:total})}});
       res.on('error',e=>{if(!settled){settled=true;clearTimeout(timer);reject(e)}});
+    });
+    req.on('socket',(socket:any)=>{
+      // `connect` means an actual TCP transport connection occurred. Socket allocation alone is not counted.
+      socket.once('connect',()=>{try{onTcpConnect()}catch{}});
     });
     const timer=setTimeout(()=>{if(!settled){settled=true;req.destroy(new Error('TIMEOUT_FULL_PROOF'));reject(new Error('TIMEOUT_FULL_PROOF'))}},remainingMs);
     req.on('error',e=>{if(!settled){settled=true;clearTimeout(timer);reject(e)}});
@@ -85,15 +95,20 @@ Deno.serve(async(req:Request)=>{
   if(re||!reservation?.ok) return reply(423,{ok:false,error:'PROOF_REQUEST_RESERVATION_FAILED',networkRequestPerformed:false});
 
   const started=Date.now();
-  let dnsVerified=false, redirectPolicyVerified=true, redirectObserved=false, networkPerformed=false;
+  let dnsVerified=false, redirectPolicyVerified=true, redirectObserved=false, redirectConnectTimeVerified=false, networkPerformed=false;
   let current=new URL(TARGET), redirects=0;
   try{
     while(true){
       await assertProofWindow(commandId);
       const ips=await stablePublicDns(current.hostname); dnsVerified=true;
+      const chosenIp=preferredValidatedIp(ips);
       await assertProofWindow(commandId);
       const remaining=MAX_TOTAL_MS-(Date.now()-started);
-      const result=await pinnedGet(current,ips[0],remaining); networkPerformed=true;
+      const isRedirectLeg=redirects>0;
+      const result=await pinnedGet(current,chosenIp,remaining,()=>{
+        networkPerformed=true;
+        if(isRedirectLeg) redirectConnectTimeVerified=true;
+      });
 
       if(result.status>=300&&result.status<400){
         redirectObserved=true;
@@ -110,12 +125,35 @@ Deno.serve(async(req:Request)=>{
       const elapsedMs=Date.now()-started;
       if(elapsedMs>MAX_TOTAL_MS) throw new Error('TIMEOUT_FULL_PROOF');
 
-      const evidence={dns_connect_time_verified:dnsVerified,redirect_policy_verified:redirectPolicyVerified,redirect_observed:redirectObserved,redirect_connect_time_verified:redirectObserved?true:true,network_request_performed:networkPerformed,status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,general_production_network_authorized:false};
+      const redirectSatisfied=!redirectObserved||redirectConnectTimeVerified;
+      const evidence={
+        dns_connect_time_verified:dnsVerified,
+        redirect_policy_verified:redirectPolicyVerified,
+        redirect_observed:redirectObserved,
+        redirect_revalidation_required:redirectObserved,
+        redirect_connect_time_verified:redirectConnectTimeVerified,
+        redirect_revalidation_satisfied:redirectSatisfied,
+        network_request_performed:networkPerformed,
+        status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,
+        transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,
+        selected_ip_family:family(chosenIp),general_production_network_authorized:false
+      };
       const fin=await finalize(requestToken,'SUCCESS',evidence);
-      return reply(200,{ok:true,status:result.status,bytes:result.bytes,redirects,elapsedMs,networkRequestPerformed:true,proofCompleted:!!fin?.proof_completed});
+      return reply(200,{ok:true,status:result.status,bytes:result.bytes,redirects,elapsedMs,networkRequestPerformed:networkPerformed,redirectObserved,proofCompleted:!!fin?.proof_completed});
     }
   }catch(e){
-    const evidence={dns_connect_time_verified:dnsVerified,redirect_policy_verified:redirectPolicyVerified,redirect_observed:redirectObserved,network_request_performed:networkPerformed,error:String((e as Error).message||e),redirects,elapsed_ms:Date.now()-started,fixed_target_url:TARGET,general_production_network_authorized:false};
+    const redirectSatisfied=!redirectObserved||redirectConnectTimeVerified;
+    const evidence={
+      dns_connect_time_verified:dnsVerified,
+      redirect_policy_verified:redirectPolicyVerified,
+      redirect_observed:redirectObserved,
+      redirect_revalidation_required:redirectObserved,
+      redirect_connect_time_verified:redirectConnectTimeVerified,
+      redirect_revalidation_satisfied:redirectSatisfied,
+      network_request_performed:networkPerformed,
+      error:String((e as Error).message||e),redirects,elapsed_ms:Date.now()-started,
+      fixed_target_url:TARGET,general_production_network_authorized:false
+    };
     try{await finalize(requestToken,'FAILED',evidence)}catch{}
     return reply(502,{ok:false,error:String((e as Error).message||e),networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,retryRequiresFreshReviewAndOwnerApproval:true});
   }
@@ -125,7 +163,9 @@ Deno.serve(async(req:Request)=>{
 - Exact target is https://example.com/; no caller-selected URL.
 - Requires production_network_enabled=false throughout.
 - Separate proof-only artifact, verify_jwt=true, post-Stabilization review/deploy only.
-- Same-host HTTPS redirects are allowed up to 3; zero redirects are valid and recorded as policy evidence.
+- Same-host HTTPS redirects are allowed up to 3; zero redirects are valid and recorded honestly as redirect_observed=false / redirect_revalidation_required=false.
+- network_request_performed becomes true only after an actual TCP connect event, not merely after socket allocation or reservation.
+- A validated IPv4 address is preferred when available, with validated IPv6 fallback.
 - Total proof timeout, including redirects, is <=10 seconds; response limit is 1 MiB.
 - Never retry automatically after reservation; failed attempts consume the slot and require fresh review/Owner approval.
 */
