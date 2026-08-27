@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#07111f"><title>Computer Shadow Enrollment</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#07111f;color:#eef7ff;display:grid;place-items:center;padding:24px}.card{width:min(620px,100%);background:#0d1a2c;border:1px solid #20334a;border-radius:24px;padding:26px}.ey{color:#73d8ff;letter-spacing:.16em;font-size:12px;font-weight:800;text-transform:uppercase}h1{font-size:clamp(30px,7vw,42px);margin:10px 0}p{color:#a7b7ca;line-height:1.6}.gate{border:1px solid #28445f;background:#0a1624;border-radius:16px;padding:14px;margin:16px 0;font-size:13px;line-height:1.6}.gate b{color:#6ee7b7}button{width:100%;min-height:56px;border:0;border-radius:16px;background:#eef7ff;color:#07111f;font-size:18px;font-weight:800;margin-top:14px}.secondary{background:#17314a;color:#eef7ff;border:1px solid #2b4c69}.st{margin-top:18px;min-height:46px;color:#a7b7ca;white-space:pre-wrap}.ok{color:#6ee7b7}.err{color:#fda4af}.small{font-size:12px;color:#6f8298;margin-top:18px}.result{display:none;margin-top:18px;border:1px solid #28533f;background:#0a1c18;border-radius:16px;padding:16px}.result.show{display:block}.tokenline{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;background:#07130f;border:1px solid #244438;border-radius:12px;padding:12px;margin:12px 0}.warn{color:#ffd795}.danger{color:#ffabb3}.count{font-weight:800;color:#ffd795}
+</style>
+</head>
+<body><main class="card">
+<div class="ey">Sovereign Owner Security Root</div>
+<h1>สมัครคอมเข้า Shadow Mode</h1>
+<p>ใช้ Owner Passkey / Face ID เดิมเพื่อออกสิทธิ์สมัครคอมแบบครั้งเดียว ระบบนี้ยัง <strong>ไม่อนุญาตให้ AI ควบคุมคอม</strong> และไม่เปิดสิทธิ์ดูจอ อ่านไฟล์ Shell เมาส์ คีย์บอร์ด หรือแอป</p>
+<div class="gate"><b>สิทธิ์ที่ออก:</b> COMPUTER_SHADOW_ENROLL เท่านั้น<br>อายุ 5 นาที · ใช้ได้ครั้งเดียว · เครื่องใหม่เริ่ม QUARANTINED_SHADOW · Execution Authority = false</div>
+<button id="go">ยืนยันด้วย Face ID / Passkey</button>
+<div id="st" class="st"></div>
+<section id="result" class="result"><b>✅ Owner ยืนยันแล้ว</b><p>คัดลอก Enrollment Token ไปใช้กับ Shadow Agent บนคอมภายในเวลาที่กำหนด</p><div id="masked" class="tokenline">—</div><button class="secondary" id="copy">คัดลอก Enrollment Token</button><p class="warn">เหลือเวลา <span id="count" class="count">—</span></p><p class="small">Token จะถูกเก็บเฉพาะในหน้านี้ชั่วคราวและถูกล้างเมื่อหมดอายุ ฐานข้อมูลเก็บเฉพาะ SHA-256 hash</p></section>
+<div class="small">No computer execution · no production authority · no persistent Owner session</div>
+</main>
+<script type="module">
+import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-computer-owner-auth-shadow';
+const btn=document.getElementById('go'),st=document.getElementById('st'),result=document.getElementById('result'),masked=document.getElementById('masked'),copy=document.getElementById('copy'),count=document.getElementById('count');
+let token='',expiresAt=0,timer=null;
+const set=(t,c='')=>{st.textContent=t;st.className='st '+c};
+async function post(body){const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok||d?.ok===false)throw new Error(d?.error||`HTTP_${r.status}`);return d}
+function clearToken(){token='';expiresAt=0;masked.textContent='หมดอายุแล้ว';copy.disabled=true;count.textContent='หมดอายุ';if(timer){clearInterval(timer);timer=null}}
+function tick(){const left=Math.max(0,expiresAt-Date.now());if(left<=0){clearToken();return}const s=Math.ceil(left/1000),m=Math.floor(s/60),r=s%60;count.textContent=`${m}:${String(r).padStart(2,'0')}`}
+copy.onclick=async()=>{try{if(!token)throw new Error('TOKEN_EXPIRED');await navigator.clipboard.writeText(token);copy.textContent='คัดลอกแล้ว';setTimeout(()=>copy.textContent='คัดลอก Enrollment Token',1500)}catch(e){set('คัดลอกไม่สำเร็จ: '+(e?.message||String(e)),'err')}};
+btn.onclick=async()=>{try{btn.disabled=true;result.classList.remove('show');set('กำลังสร้างคำขอยืนยัน Owner…');const s=await post({action:'start'});set('กำลังขอ one-time Passkey challenge…');const o=await post({action:'options',requestId:s.requestId,state:s.state});set('กรุณายืนยัน Face ID / Passkey…');const credential=await startAuthentication({optionsJSON:o.options});set('กำลังตรวจ Sovereign Owner Security Root…');const v=await post({action:'verify',requestId:s.requestId,state:s.state,credential});if(!v?.verified||!v?.enrollmentToken)throw new Error('OWNER_AUTH_NOT_CONFIRMED');token=v.enrollmentToken;expiresAt=new Date(v.expiresAt).getTime();masked.textContent=token.slice(0,8)+'…'+token.slice(-6);copy.disabled=false;result.classList.add('show');set('✅ ยืนยัน Owner สำเร็จ — ออก Shadow Enrollment Token แล้ว','ok');tick();timer=setInterval(tick,1000)}catch(e){btn.disabled=false;clearToken();result.classList.remove('show');set('ไม่สำเร็จ: '+(e?.message||String(e)),'err')}};
+addEventListener('pagehide',()=>{token=''});
+</script></body></html>
