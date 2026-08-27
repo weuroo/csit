@@ -1,5 +1,5 @@
 -- PRE-STAGED CANDIDATE ONLY. DO NOT APPLY DURING FEATURE FREEZE.
--- Generated against live PM schema on 2026-08-27.
+-- Generated against live PM schema on 2026-08-27 and hardened against current Owner Security Root rules.
 -- Must be re-reviewed against current Operating Manual + live schema after Stabilization Exit.
 -- This file is deliberately .disabled and MUST NOT be auto-deployed.
 
@@ -20,7 +20,8 @@ create table if not exists public.pm_internet_transport_proof_request_tokens_v1 
 revoke all on table public.pm_internet_transport_proof_request_tokens_v1 from public, anon, authenticated;
 grant select, insert, update on table public.pm_internet_transport_proof_request_tokens_v1 to service_role;
 
--- Helper: exact fresh VERIFIED v3 command + consumed/allowed Owner gateway audit.
+-- Helper: exact fresh VERIFIED v3+ command + consumed/allowed Owner gateway audit.
+-- Caller-supplied signature_verified is never accepted here; authority is read from the persisted VERIFIED command + audit.
 create or replace function public.pm_internet_assert_verified_transport_command_v1(p_command_id uuid)
 returns public.pm_signed_owner_commands_v1
 language plpgsql
@@ -39,12 +40,28 @@ begin
     and expires_at>now()
     and command_type='GRANT_CAPABILITY'
     and action_scope='PUBLIC_READ'
+    and risk_level='LOW'
+    and signature_algorithm='WEBAUTHN_ASSERTION_VERIFIED_SERVER_SIDE'
+    and canonical_payload->>'owner_user_id'=owner_user_id::text
+    and canonical_payload->>'device_id'=device_id::text
+    and canonical_payload->>'capability_key'='CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'
+    and canonical_payload->>'grantee_agent_key'='PAOJAI_OPERATIONS_AI'
     and canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'
     and canonical_payload->>'transport_proof_target_url'='https://example.com/'
     and coalesce((canonical_payload->>'transport_proof_max_requests')::int,0)=1
+    and coalesce((canonical_payload->>'requested_grant_minutes')::int,0) between 1 and 10
+    and coalesce((canonical_payload->>'can_delegate')::boolean,true)=false
     and coalesce((canonical_payload->>'authorize_owner_lockdown_release_for_transport_proof_only')::boolean,false)=true
     and coalesce((canonical_payload->>'owner_lockdown_release_max_seconds')::int,0) between 1 and 120
-    and coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false;
+    and coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false
+    and canonical_payload#>>'{allowed_resources,scheme}'='https'
+    and coalesce((canonical_payload#>>'{allowed_resources,public_internet_only}')::boolean,false)=true
+    and coalesce((canonical_payload#>>'{allowed_resources,credentials}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,downloads}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,code_execution}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,external_side_effects}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,protected_data_egress}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,cross_client_context}')::boolean,true)=false;
   if not found then raise exception 'VERIFIED_TRANSPORT_PROOF_COMMAND_REQUIRED'; end if;
 
   select * into a
@@ -55,6 +72,7 @@ begin
     and nonce=c.nonce
     and allowed=true
     and nonce_consumed=true
+    and source_component='pm-owner-internet-pilot-approval-shadow'
   order by observed_at desc limit 1;
   if not found then raise exception 'OWNER_GATEWAY_AUDIT_REQUIRED'; end if;
 
@@ -63,6 +81,66 @@ end;
 $$;
 revoke all on function public.pm_internet_assert_verified_transport_command_v1(uuid) from public, anon, authenticated;
 grant execute on function public.pm_internet_assert_verified_transport_command_v1(uuid) to service_role;
+
+-- Safety fail-safe: physically relock an expired proof window and revoke its active grant.
+-- This does not reopen or decrement a consumed request slot.
+create or replace function public.pm_internet_transport_proof_relock_expired_v1()
+returns jsonb
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
+  exp timestamptz;
+  source_cmd uuid;
+  revoked_count int := 0;
+begin
+  select * into ctl
+  from public.pm_owner_internet_gateway_control_shadow_v1
+  where control_key='CONTROLLED_INTERNET_GATEWAY'
+  for update;
+  if not found then raise exception 'GATEWAY_CONTROL_MISSING'; end if;
+
+  if ctl.owner_lockdown_active or ctl.mode<>'TRANSPORT_PROOF_SINGLE_REQUEST' then
+    return jsonb_build_object('ok',true,'relocked',false,'reason','NO_ACTIVE_PROOF_WINDOW','owner_lockdown_active',ctl.owner_lockdown_active,'production_network_enabled',ctl.production_network_enabled);
+  end if;
+
+  begin exp := nullif(ctl.evidence->>'unlock_expires_at','')::timestamptz; exception when others then exp := null; end;
+  begin source_cmd := nullif(ctl.evidence->>'source_command_id','')::uuid; exception when others then source_cmd := null; end;
+
+  if exp is not null and exp>now() then
+    return jsonb_build_object('ok',true,'relocked',false,'reason','WINDOW_STILL_VALID','unlock_expires_at',exp,'production_network_enabled',ctl.production_network_enabled);
+  end if;
+
+  update public.pm_owner_internet_gateway_control_shadow_v1
+  set owner_lockdown_active=true,
+      production_network_enabled=false,
+      mode='SHADOW_ONLY',
+      updated_by='pm_internet_transport_proof_relock_expired_v1',
+      evidence=coalesce(evidence,'{}'::jsonb)||jsonb_build_object('expired_window_relocked_at',now()),
+      updated_at=now()
+  where control_key='CONTROLLED_INTERNET_GATEWAY';
+
+  update public.pm_internet_transport_proof_lane_v1
+  set enabled=false,updated_by='pm_internet_transport_proof_relock_expired_v1',updated_at=now()
+  where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF' and enabled=true;
+
+  if source_cmd is not null then
+    update public.pm_agent_capability_grants_v1
+    set status='REVOKED',updated_at=now(),
+        evidence=coalesce(evidence,'{}'::jsonb)||jsonb_build_object('revoked_on_expired_proof_window',true,'revoked_at',now())
+    where source_command_id=source_cmd
+      and grantee_agent_key='PAOJAI_OPERATIONS_AI'
+      and status='ACTIVE';
+    get diagnostics revoked_count = row_count;
+  end if;
+
+  return jsonb_build_object('ok',true,'relocked',true,'reason','PROOF_WINDOW_EXPIRED_OR_INVALID','revoked_grants',revoked_count,'owner_lockdown_active',true,'production_network_enabled',false);
+end;
+$$;
+revoke all on function public.pm_internet_transport_proof_relock_expired_v1() from public, anon, authenticated;
+grant execute on function public.pm_internet_transport_proof_relock_expired_v1() to service_role;
 
 -- Phase A: bounded unlock + proof lane arm. General production network stays false.
 create or replace function public.pm_internet_transport_proof_bounded_unlock_v1(p_command_id uuid)
@@ -123,7 +201,13 @@ begin
     and max_requests=1
     and network_request_count=0
     and proof_completed=false;
-  if not found then raise exception 'PROOF_LANE_NOT_PRISTINE'; end if;
+  if not found then
+    -- Never leave Lockdown open if lane arming fails.
+    update public.pm_owner_internet_gateway_control_shadow_v1
+    set owner_lockdown_active=true,production_network_enabled=false,mode='SHADOW_ONLY',updated_by='pm_internet_transport_proof_bounded_unlock_v1_fail_closed',updated_at=now()
+    where control_key='CONTROLLED_INTERNET_GATEWAY';
+    raise exception 'PROOF_LANE_NOT_PRISTINE';
+  end if;
 
   return jsonb_build_object('ok',true,'command_id',c.command_id,'unlock_max_seconds',max_secs,'production_network_enabled',false,'general_production_network_authorized',false);
 end;
@@ -142,11 +226,17 @@ declare
   c public.pm_signed_owner_commands_v1%rowtype;
   g public.pm_agent_capability_grants_v1%rowtype;
   ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
+  exp timestamptz;
 begin
   c := public.pm_internet_assert_verified_transport_command_v1(p_command_id);
   select * into ctl from public.pm_owner_internet_gateway_control_shadow_v1 where control_key='CONTROLLED_INTERNET_GATEWAY';
   if not found or ctl.owner_lockdown_active or ctl.production_network_enabled or ctl.mode<>'TRANSPORT_PROOF_SINGLE_REQUEST' then
     raise exception 'BOUNDED_UNLOCK_REQUIRED';
+  end if;
+  begin exp := nullif(ctl.evidence->>'unlock_expires_at','')::timestamptz; exception when others then exp := null; end;
+  if exp is null or exp<=now() or ctl.evidence->>'source_command_id'<>c.command_id::text then
+    perform public.pm_internet_transport_proof_relock_expired_v1();
+    raise exception 'PROOF_WINDOW_EXPIRED_OR_COMMAND_MISMATCH';
   end if;
 
   select * into g from public.pm_agent_capability_grants_v1
@@ -162,8 +252,8 @@ begin
     valid_from,expires_at,status,source_command_id,evidence
   ) values (
     c.owner_user_id,'PAOJAI_OPERATIONS_AI',array['PUBLIC_READ'],
-    jsonb_build_object('fixed_target_url','https://example.com/','max_requests',1,'credentials',false,'download',false,'code_execution',false,'external_side_effects',false,'protected_data_egress',false,'cross_client_context',false),
-    'LOW',false,now(),least(c.expires_at,now()+interval '10 minutes'),'ACTIVE',c.command_id,
+    jsonb_build_object('fixed_target_url','https://example.com/','max_requests',1,'scheme','https','public_internet_only',true,'credentials',false,'downloads',false,'download',false,'code_execution',false,'external_side_effects',false,'protected_data_egress',false,'cross_client_context',false),
+    'LOW',false,now(),least(c.expires_at,now()+interval '10 minutes',exp),'ACTIVE',c.command_id,
     jsonb_build_object('activation_scope','TRANSPORT_PROOF_SINGLE_REQUEST','source_command_id',c.command_id,'general_production_network_authorized',false)
   ) returning * into g;
 
@@ -184,6 +274,8 @@ declare
   c public.pm_signed_owner_commands_v1%rowtype;
   lane public.pm_internet_transport_proof_lane_v1%rowtype;
   g public.pm_agent_capability_grants_v1%rowtype;
+  ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
+  exp timestamptz;
 begin
   c := public.pm_internet_assert_verified_transport_command_v1(p_command_id);
   if p_request_token is null then raise exception 'REQUEST_TOKEN_REQUIRED'; end if;
@@ -192,10 +284,30 @@ begin
     return jsonb_build_object('ok',true,'request_token',p_request_token,'duplicate',true,'slot_consumed',true);
   end if;
 
+  select * into ctl
+  from public.pm_owner_internet_gateway_control_shadow_v1
+  where control_key='CONTROLLED_INTERNET_GATEWAY'
+  for update;
+  if not found or ctl.owner_lockdown_active or ctl.production_network_enabled or ctl.mode<>'TRANSPORT_PROOF_SINGLE_REQUEST' then
+    raise exception 'ACTIVE_BOUNDED_PROOF_WINDOW_REQUIRED';
+  end if;
+  begin exp := nullif(ctl.evidence->>'unlock_expires_at','')::timestamptz; exception when others then exp := null; end;
+  if exp is null or exp<=now() or ctl.evidence->>'source_command_id'<>c.command_id::text then
+    perform public.pm_internet_transport_proof_relock_expired_v1();
+    raise exception 'PROOF_WINDOW_EXPIRED_OR_COMMAND_MISMATCH';
+  end if;
+
   select * into g from public.pm_agent_capability_grants_v1
   where source_command_id=c.command_id and grantee_agent_key='PAOJAI_OPERATIONS_AI'
     and status='ACTIVE' and valid_from<=now() and expires_at>now()
     and 'PUBLIC_READ'=any(allowed_actions) and risk_ceiling='LOW' and can_delegate=false
+    and allowed_resources->>'fixed_target_url'='https://example.com/'
+    and coalesce((allowed_resources->>'credentials')::boolean,true)=false
+    and coalesce((allowed_resources->>'downloads')::boolean,true)=false
+    and coalesce((allowed_resources->>'code_execution')::boolean,true)=false
+    and coalesce((allowed_resources->>'external_side_effects')::boolean,true)=false
+    and coalesce((allowed_resources->>'protected_data_egress')::boolean,true)=false
+    and coalesce((allowed_resources->>'cross_client_context')::boolean,true)=false
   order by created_at desc limit 1;
   if not found then raise exception 'BOUNDED_LIVE_GRANT_REQUIRED'; end if;
 
@@ -210,7 +322,7 @@ begin
   if not found then raise exception 'PROOF_REQUEST_SLOT_UNAVAILABLE'; end if;
 
   insert into public.pm_internet_transport_proof_request_tokens_v1(request_token,lane_key,source_command_id,evidence)
-  values (p_request_token,lane.lane_key,c.command_id,jsonb_build_object('slot_consumed',true,'policy','FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE'));
+  values (p_request_token,lane.lane_key,c.command_id,jsonb_build_object('slot_consumed',true,'reserved_before_dns_or_network',true,'policy','FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE'));
 
   return jsonb_build_object('ok',true,'request_token',p_request_token,'duplicate',false,'slot_consumed',true,'network_request_count',lane.network_request_count);
 end;
@@ -219,6 +331,8 @@ revoke all on function public.pm_internet_transport_proof_reserve_request_v1(uui
 grant execute on function public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid) to service_role;
 
 -- Idempotent finalize. Never decrements request count or reopens the lane.
+-- Zero redirects are valid only when redirect_observed=false and redirect_revalidation_satisfied=true;
+-- this never fabricates redirect_connect_time_verified=true.
 create or replace function public.pm_internet_transport_proof_finalize_request_v1(p_request_token uuid, p_outcome text, p_evidence jsonb default '{}'::jsonb)
 returns jsonb
 language plpgsql
@@ -228,8 +342,16 @@ as $$
 declare
   r public.pm_internet_transport_proof_request_tokens_v1%rowtype;
   dns_ok boolean := false;
-  redir_ok boolean := false;
+  redirect_policy_ok boolean := false;
+  redirect_satisfied boolean := false;
+  network_ok boolean := false;
+  target_ok boolean := false;
+  bounds_ok boolean := false;
+  general_network_safe boolean := false;
   success boolean := false;
+  status_code int := 0;
+  bytes_count bigint := 0;
+  elapsed_ms bigint := 0;
 begin
   select * into r from public.pm_internet_transport_proof_request_tokens_v1 where request_token=p_request_token for update;
   if not found then raise exception 'RESERVATION_NOT_FOUND'; end if;
@@ -238,17 +360,32 @@ begin
   end if;
 
   dns_ok := coalesce((p_evidence->>'dns_connect_time_verified')::boolean,false);
-  redir_ok := coalesce((p_evidence->>'redirect_connect_time_verified')::boolean,false);
-  success := upper(coalesce(p_outcome,''))='SUCCESS' and dns_ok and redir_ok;
+  redirect_policy_ok := coalesce((p_evidence->>'redirect_policy_verified')::boolean,false);
+  redirect_satisfied := coalesce((p_evidence->>'redirect_revalidation_satisfied')::boolean,false);
+  network_ok := coalesce((p_evidence->>'network_request_performed')::boolean,false);
+  target_ok := coalesce(p_evidence->>'fixed_target_url','')='https://example.com/';
+  general_network_safe := coalesce((p_evidence->>'general_production_network_authorized')::boolean,true)=false;
+  begin status_code := coalesce((p_evidence->>'status')::int,0); exception when others then status_code := 0; end;
+  begin bytes_count := coalesce((p_evidence->>'bytes')::bigint,0); exception when others then bytes_count := 0; end;
+  begin elapsed_ms := coalesce((p_evidence->>'elapsed_ms')::bigint,0); exception when others then elapsed_ms := 0; end;
+  bounds_ok := status_code between 200 and 299 and bytes_count between 0 and 1048576 and elapsed_ms between 0 and 10000;
+
+  success := upper(coalesce(p_outcome,''))='SUCCESS'
+    and dns_ok and redirect_policy_ok and redirect_satisfied and network_ok
+    and target_ok and bounds_ok and general_network_safe;
 
   update public.pm_internet_transport_proof_request_tokens_v1
-  set finalized_at=now(),outcome=p_outcome,evidence=coalesce(p_evidence,'{}'::jsonb) || jsonb_build_object('slot_remains_consumed',true)
+  set finalized_at=now(),outcome=p_outcome,evidence=coalesce(p_evidence,'{}'::jsonb) || jsonb_build_object(
+    'slot_remains_consumed',true,
+    'finalize_success_criteria_passed',success,
+    'fail_policy','FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE'
+  )
   where request_token=p_request_token
   returning * into r;
 
   update public.pm_internet_transport_proof_lane_v1
   set dns_pinning_evidence_collected = dns_pinning_evidence_collected or dns_ok,
-      redirect_revalidation_evidence_collected = redirect_revalidation_evidence_collected or redir_ok,
+      redirect_revalidation_evidence_collected = redirect_revalidation_evidence_collected or redirect_satisfied,
       proof_completed = proof_completed or success,
       enabled=false,
       updated_by='pm_internet_transport_proof_finalize_request_v1',updated_at=now()
@@ -265,7 +402,13 @@ begin
   set status='REVOKED',updated_at=now(),evidence=coalesce(evidence,'{}'::jsonb)||jsonb_build_object('revoked_after_transport_proof',true,'request_token',p_request_token)
   where source_command_id=r.source_command_id and grantee_agent_key='PAOJAI_OPERATIONS_AI' and status='ACTIVE';
 
-  return jsonb_build_object('ok',true,'request_token',r.request_token,'duplicate_finalize',false,'outcome',r.outcome,'proof_completed',success,'slot_remains_consumed',true,'owner_lockdown_active',true,'production_network_enabled',false);
+  return jsonb_build_object(
+    'ok',true,'request_token',r.request_token,'duplicate_finalize',false,'outcome',r.outcome,
+    'proof_completed',success,'slot_remains_consumed',true,'owner_lockdown_active',true,
+    'production_network_enabled',false,'dns_verified',dns_ok,'redirect_policy_verified',redirect_policy_ok,
+    'redirect_revalidation_satisfied',redirect_satisfied,'network_request_performed',network_ok,
+    'bounded_response_verified',bounds_ok
+  );
 end;
 $$;
 revoke all on function public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb) from public, anon, authenticated;
@@ -276,14 +419,32 @@ revoke all on function public.pm_internet_transport_proof_bounded_unlock_v1(uuid
 revoke all on function public.pm_internet_create_command_bound_pilot_grant_v1(uuid) from public, anon, authenticated;
 revoke all on function public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid) from public, anon, authenticated;
 revoke all on function public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb) from public, anon, authenticated;
+revoke all on function public.pm_internet_transport_proof_relock_expired_v1() from public, anon, authenticated;
+
+-- Automatic fail-safe cleanup of an abandoned/expired <=120s proof window.
+-- pg_cron is present in Production; re-check after Stabilization Exit before applying.
+do $$
+declare j record;
+begin
+  for j in select jobid from cron.job where jobname='pm_internet_transport_proof_expiry_relock_v1' loop
+    perform cron.unschedule(j.jobid);
+  end loop;
+  perform cron.schedule(
+    'pm_internet_transport_proof_expiry_relock_v1',
+    '* * * * *',
+    $job$select public.pm_internet_transport_proof_relock_expired_v1();$job$
+  );
+end;
+$$;
 
 commit;
 
 -- POST-EXIT REVIEW REQUIREMENTS BEFORE CONVERSION TO REAL MIGRATION:
 -- 1) Re-read Manual + current live schema and constraints.
--- 2) Confirm accepted grant status values and artifact attestation state.
+-- 2) Confirm accepted grant status values, pg_cron availability, and artifact attestation state.
 -- 3) Confirm exact expected function signatures in pm_internet_post_freeze_contract_validation_v1().
--- 4) Run on an isolated/non-production validation target first if available.
--- 5) Run Authority Surface + Central/Action/Guardian + Recovery regressions.
--- 6) Do not request Owner Passkey until technical_implementation_complete=true.
--- 7) Do not deploy proof executor or perform network before fresh VERIFIED v3 Owner command.
+-- 4) Validate the migration on an isolated/non-production target first if available.
+-- 5) Run Authority Surface + Central/Action/Guardian + concurrency/failure-policy + Recovery/Kill-Switch regressions.
+-- 6) Confirm expiry relock job physically restores Owner Lockdown and revokes a stale proof grant without touching request count.
+-- 7) Do not request Owner Passkey until technical_implementation_complete=true and owner_action_required_now=true.
+-- 8) Do not deploy proof executor or perform network before fresh VERIFIED v3 Owner command.
