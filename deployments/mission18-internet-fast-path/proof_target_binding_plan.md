@@ -2,38 +2,43 @@
 
 Status: DO NOT APPLY OR DEPLOY DURING FEATURE FREEZE.
 
-## Finding
+## Canonical proof target
 
-The current candidate/activation path is hard-bound to `https://example.com/`. That target is unsuitable for a deterministic operational proof because PM does not control its redirect behavior. The first proof also needs direct redirect revalidation evidence without fabricating a redirect.
+The exact cryptographically bound target for the first real proof is:
 
-## Replacement target after Stabilization Exit
+`https://example.com/`
 
-Canonical target should be PM-owned and deterministic on the Mission Control Hub production origin:
+This must remain identical across the Owner command, proof lane, bounded grant, reservation/finalize logic, executor, readiness checks, and audit evidence. No alias, wildcard, caller-selected target, or fallback target is allowed.
 
-`https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect`
+## Runtime behavior
 
-Expected behavior:
-1. GET `/api/internet-proof-redirect` -> `302 Location: /api/internet-proof-final`
-2. Same host, HTTPS only.
-3. Executor must re-run live gates + DNS/IP guard before the second connect.
-4. GET `/api/internet-proof-final` -> `200` small JSON response.
-5. No credentials, no client data, no protected data, no state mutation, no external side effect.
+1. Resolve `example.com` immediately before connect and require all resolved IPs to pass the public-IP guard.
+2. Re-resolve/revalidate at connect time to protect against DNS rebinding.
+3. Establish TLS with hostname verification for `example.com` while pinning the selected public IP.
+4. Allow HTTPS redirects only when the redirect remains on the same host; maximum 3 redirects.
+5. Re-run live authority/window checks and DNS/IP validation before every redirected connect.
+6. A redirect is not required for success. If no redirect occurs, redirect-policy evidence must record that zero redirects were observed and no cross-host/non-HTTPS redirect was followed.
+7. Enforce total request timeout <=10 seconds and response body <=1 MiB.
+8. No credentials, client data, protected data, download, code execution, or external side effects.
+9. Reservation occurs atomically before any DNS/network side effect and is never auto-released after acquisition.
+10. General `production_network_enabled` remains false for the entire proof-only mission.
 
-## Mandatory binding changes before any real proof
+## Mandatory exact-binding checks before any real proof
 
-Re-review and update all exact target comparisons atomically; never change only one layer:
+Re-review and require exact agreement across:
 - `pm_internet_transport_proof_lane_v1.fixed_target_url`
 - Owner Passkey canonical payload `transport_proof_target_url`
+- Owner command intent `TRANSPORT_PROOF_SINGLE_REQUEST`
 - `pm_internet_transport_proof_activation_gate_v1`
-- `pm_internet_assert_verified_transport_command_v1`
+- verified-command helper exact-target comparison
 - bounded grant `allowed_resources.fixed_target_url`
-- atomic reservation exact target check
+- atomic reservation exact-target check
 - proof executor `TARGET`
 - artifact attestation/hash and review record
 - verification tests and Mission Control readiness display
 
 ## Safety gate
 
-Target migration is NOT authority expansion. Nevertheless, it MUST be treated as a reviewed post-freeze migration because it changes cryptographically bound Owner intent and transport policy. Fresh Owner Passkey must be generated only after the final target is deployed, verified public, and all bindings agree exactly.
+Fresh Owner Passkey is requested only after Stabilization Exit, all six technical implementation gaps are complete, contract/authority/concurrency/recovery checks pass, and readiness reports `owner_action_required_now=true`.
 
-Do not accept aliases, wildcards, caller-supplied URLs, query-controlled redirects, cross-host redirects, or fallback to `example.com` after the migration.
+The approval must bind exactly one request to `https://example.com/`, bounded unlock <=120 seconds, grant <=10 minutes, `PUBLIC_READ`, `PAOJAI_OPERATIONS_AI`, `can_delegate=false`, and `general_production_network_authorized=false`.
