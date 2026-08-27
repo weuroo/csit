@@ -1,0 +1,145 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING ACTIVE FEATURE FREEZE WITHOUT EXPLICIT SECURITY-FIX REVIEW.
+-- Mission #18 security blocker discovered from live Production readiness:
+-- pm_owner_gateway_crypto_binding_readiness_v1() reports
+-- CALLER_ASSERTED_SIGNATURE_VERIFICATION_STILL_TRUSTED.
+--
+-- Goal: remove caller-supplied boolean signature authority from the Mission #18 path.
+-- This patch intentionally creates a NEW v2 gateway contract rather than weakening/replacing
+-- the existing v1 function blindly. The activation path must require v2 evidence before Owner Passkey.
+--
+-- Required invariant: the gateway independently derives cryptographic authority from a previously
+-- server-verified, consumed WebAuthn step-up record bound to owner/device/nonce/payload hash/intent/origin/RP ID.
+-- p_signature_verified MUST NOT exist in the v2 authority contract.
+
+begin;
+
+create or replace function public.pm_owner_command_gateway_v2(p_command_id uuid, p_source_component text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  cmd public.pm_signed_owner_commands_v1%rowtype;
+  pol public.pm_sovereign_security_policy_v1%rowtype;
+  dev public.pm_owner_trusted_devices_v1%rowtype;
+  nonce_row public.pm_owner_command_nonces_v1%rowtype;
+  step_row public.pm_owner_passkey_stepup_challenges_v1%rowtype;
+  reasons text[] := array[]::text[];
+  consumed boolean := false;
+  max_auth_age int;
+  purpose text;
+  activation_scope text;
+  target_url text;
+  max_requests int;
+  release_ok boolean;
+  release_seconds int;
+  general_net boolean;
+begin
+  select * into cmd from public.pm_signed_owner_commands_v1 where command_id=p_command_id for update;
+  if not found then return jsonb_build_object('allowed',false,'reason','COMMAND_NOT_FOUND','crypto_bound',false); end if;
+
+  if cmd.verification_state <> 'UNVERIFIED' then reasons:=array_append(reasons,'COMMAND_STATE_NOT_UNVERIFIED'); end if;
+  if cmd.verified_at is not null then reasons:=array_append(reasons,'COMMAND_ALREADY_VERIFIED'); end if;
+  if cmd.expires_at <= now() then reasons:=array_append(reasons,'COMMAND_EXPIRED'); end if;
+  if cmd.issued_at > now()+interval '30 seconds' then reasons:=array_append(reasons,'INVALID_ISSUED_AT'); end if;
+  if cmd.signature_algorithm <> 'WEBAUTHN_ASSERTION_VERIFIED_SERVER_SIDE' then reasons:=array_append(reasons,'SERVER_WEBAUTHN_MARKER_MISSING'); end if;
+
+  select * into pol from public.pm_sovereign_security_policy_v1 where policy_key='ROOT_OWNER' limit 1;
+  if not found then reasons:=array_append(reasons,'POLICY_MISSING');
+  elsif coalesce(pol.kill_switch_active,false) then reasons:=array_append(reasons,'OWNER_KILL_SWITCH_ACTIVE'); end if;
+
+  if not exists(select 1 from public.pm_owner_auth_allowlist_v1 where user_id=cmd.owner_user_id and active=true and role='OWNER') then
+    reasons:=array_append(reasons,'OWNER_NOT_ALLOWLISTED');
+  end if;
+
+  select * into dev from public.pm_owner_trusted_devices_v1
+   where device_id=cmd.device_id and owner_user_id=cmd.owner_user_id
+     and trust_state in ('TRUSTED','TRUSTED_SHADOW') and revoked_at is null;
+  if not found then reasons:=array_append(reasons,'DEVICE_NOT_TRUSTED'); end if;
+
+  select * into nonce_row from public.pm_owner_command_nonces_v1 where nonce=cmd.nonce for update;
+  if not found then reasons:=array_append(reasons,'NONCE_UNKNOWN');
+  else
+    if nonce_row.consumed_at is not null then reasons:=array_append(reasons,'NONCE_REPLAY'); end if;
+    if nonce_row.expires_at <= now() then reasons:=array_append(reasons,'NONCE_EXPIRED'); end if;
+    if nonce_row.owner_user_id <> cmd.owner_user_id then reasons:=array_append(reasons,'NONCE_OWNER_MISMATCH'); end if;
+    if nonce_row.device_id is distinct from cmd.device_id then reasons:=array_append(reasons,'NONCE_DEVICE_MISMATCH'); end if;
+    if nonce_row.command_hash is distinct from cmd.payload_hash then reasons:=array_append(reasons,'NONCE_PAYLOAD_HASH_MISMATCH'); end if;
+  end if;
+
+  -- Independent cryptographic evidence derivation. The gateway reads the used WebAuthn step-up row itself.
+  select * into step_row
+  from public.pm_owner_passkey_stepup_challenges_v1 s
+  where s.owner_user_id=cmd.owner_user_id
+    and s.device_id=cmd.device_id
+    and s.used_at is not null
+    and s.used_at <= s.expires_at
+    and s.expected_origin='https://paojai-owner-enrollment.vercel.app'
+    and s.expected_rp_id='paojai-owner-enrollment.vercel.app'
+    and s.evidence->>'nonce'=cmd.nonce
+    and s.evidence->>'payload_hash'=cmd.payload_hash
+    and s.evidence->>'owner_user_id'=cmd.owner_user_id::text
+    and s.evidence->>'device_id'=cmd.device_id::text
+    and s.evidence->>'purpose'='INTERNET_PILOT_OWNER_APPROVAL'
+  order by s.used_at desc limit 1;
+  if not found then reasons:=array_append(reasons,'VERIFIED_WEBAUTHN_STEPUP_EVIDENCE_MISSING'); end if;
+
+  purpose:=coalesce(step_row.evidence->>'purpose','');
+  activation_scope:=coalesce(cmd.canonical_payload->>'activation_scope','');
+  target_url:=coalesce(cmd.canonical_payload->>'transport_proof_target_url','');
+  max_requests:=coalesce((cmd.canonical_payload->>'transport_proof_max_requests')::int,0);
+  release_ok:=coalesce((cmd.canonical_payload->>'authorize_owner_lockdown_release_for_transport_proof_only')::boolean,false);
+  release_seconds:=coalesce((cmd.canonical_payload->>'owner_lockdown_release_max_seconds')::int,0);
+  general_net:=coalesce((cmd.canonical_payload->>'general_production_network_authorized')::boolean,true);
+
+  if cmd.command_type <> 'GRANT_CAPABILITY' then reasons:=array_append(reasons,'COMMAND_TYPE_INVALID'); end if;
+  if cmd.action_scope <> 'PUBLIC_READ' then reasons:=array_append(reasons,'ACTION_SCOPE_INVALID'); end if;
+  if activation_scope <> 'TRANSPORT_PROOF_SINGLE_REQUEST' then reasons:=array_append(reasons,'ACTIVATION_SCOPE_INVALID'); end if;
+  if target_url <> 'https://example.com/' then reasons:=array_append(reasons,'TARGET_BINDING_INVALID'); end if;
+  if max_requests <> 1 then reasons:=array_append(reasons,'MAX_REQUESTS_INVALID'); end if;
+  if not release_ok or release_seconds <> 120 then reasons:=array_append(reasons,'LOCKDOWN_RELEASE_BINDING_INVALID'); end if;
+  if general_net then reasons:=array_append(reasons,'GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_FALSE'); end if;
+
+  max_auth_age:=case upper(coalesce(cmd.risk_level,'LOW')) when 'CRITICAL' then 60 when 'HIGH' then 120 when 'MEDIUM' then 300 else 900 end;
+  if cmd.auth_age_seconds is null or cmd.auth_age_seconds<0 or cmd.auth_age_seconds>max_auth_age then reasons:=array_append(reasons,'AUTH_NOT_FRESH'); end if;
+
+  if coalesce(array_length(reasons,1),0)=0 then
+    update public.pm_owner_command_nonces_v1 set consumed_at=now()
+      where nonce=cmd.nonce and consumed_at is null;
+    get diagnostics max_auth_age=row_count;
+    consumed:=max_auth_age=1;
+    if not consumed then reasons:=array_append(reasons,'NONCE_CONSUME_RACE'); end if;
+  end if;
+
+  insert into public.pm_owner_command_gateway_audit_v1(
+    owner_user_id,device_id,nonce,command_type,risk_level,allowed,decision_code,reasons,
+    enforcement_enabled,nonce_consumed,source_component,command_key)
+  values(
+    cmd.owner_user_id,cmd.device_id,cmd.nonce,cmd.command_type,upper(coalesce(cmd.risk_level,'LOW')),
+    coalesce(array_length(reasons,1),0)=0 and consumed,
+    case when coalesce(array_length(reasons,1),0)=0 and consumed then 'ALLOW_CRYPTO_BOUND_V2' else 'BLOCK_CRYPTO_BOUND_V2' end,
+    to_jsonb(reasons),true,consumed,p_source_component,'internet-pilot:'||cmd.command_id::text);
+
+  return jsonb_build_object(
+    'allowed',coalesce(array_length(reasons,1),0)=0 and consumed,
+    'decision_code',case when coalesce(array_length(reasons,1),0)=0 and consumed then 'ALLOW_CRYPTO_BOUND_V2' else 'BLOCK_CRYPTO_BOUND_V2' end,
+    'reasons',to_jsonb(reasons),'nonce_consumed',consumed,'crypto_bound',true,
+    'caller_asserted_signature_authority',false,'production_network_enabled',false);
+end;
+$$;
+
+revoke all on function public.pm_owner_command_gateway_v2(uuid,text) from public, anon, authenticated;
+grant execute on function public.pm_owner_command_gateway_v2(uuid,text) to service_role;
+
+commit;
+
+-- REQUIRED FOLLOW-UP BEFORE FIRST OWNER PASSKEY:
+-- 1. Approval Edge v5+ must call ONLY pm_owner_command_gateway_v2(command_id, source_component).
+-- 2. Approval Edge must never send signature_verified=true to any authority function.
+-- 3. Promote pm_signed_owner_commands_v1 to VERIFIED only after v2 returns allowed=true and nonce_consumed=true.
+-- 4. verification_reason must record CRYPTO_BOUND_GATEWAY_V2.
+-- 5. Mission #18 activation gate must require a gateway audit decision_code='ALLOW_CRYPTO_BOUND_V2'.
+-- 6. pm_owner_gateway_crypto_binding_readiness_v1 (or successor) must pass before technical readiness.
+-- 7. v1 gateway must not be accepted as Mission #18 proof authority.
+-- 8. This patch does not unlock Owner Lockdown, create grants, enable proof lane, or enable network.
