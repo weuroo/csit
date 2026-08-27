@@ -1,0 +1,42 @@
+// PRE-STAGED ONLY. DO NOT RUN DURING FEATURE FREEZE.
+// Mission #18 direct runtime concurrency proof harness.
+// Purpose: after Production atomic reservation exists and all pre-proof gates pass,
+// invoke the reservation path concurrently with distinct request tokens and prove
+// that at most one caller acquires the single proof slot.
+
+const CALLERS = 8;
+
+export async function runConcurrencyProof(reserve: (token: string) => Promise<{acquired:boolean; reason?:string}>) {
+  const tokens = Array.from({length: CALLERS}, () => crypto.randomUUID());
+  const results = await Promise.all(tokens.map(async token => ({ token, result: await reserve(token) })));
+  const winners = results.filter(x => x.result.acquired);
+  const losers = results.filter(x => !x.result.acquired);
+
+  if (winners.length !== 1) {
+    throw new Error(`CONCURRENCY_PROOF_FAILED: expected exactly 1 winner, got ${winners.length}`);
+  }
+  if (losers.length !== CALLERS - 1) {
+    throw new Error(`CONCURRENCY_PROOF_FAILED: expected ${CALLERS - 1} losers, got ${losers.length}`);
+  }
+
+  return {
+    passed: true,
+    callers: CALLERS,
+    winners: 1,
+    losers: CALLERS - 1,
+    winningToken: winners[0].token,
+    // Do not auto-release the winning slot. A reserved slot stays consumed.
+    reservationPolicy: 'FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE'
+  };
+}
+
+/* Mandatory conditions before running:
+- Stabilization Exit verified.
+- service-role-only Production reservation function deployed and contract-validated.
+- Authority Surface regression passed.
+- Proof Lane fixed max_requests=1.
+- No DNS/network side effect occurs in this concurrency proof; test reservation only.
+- Distinct unique request tokens for every caller.
+- Exactly one winner is required. Zero winners or >1 winner is failure.
+- Winning slot remains consumed; resetting/retrying requires approved review flow.
+*/
