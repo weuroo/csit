@@ -2,45 +2,42 @@
 
 Status: DO NOT DEPLOY / DO NOT PROMOTE DURING FEATURE FREEZE.
 
-Canonical proof target:
-`https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect`
+Canonical proof target: `https://example.com/`
 
-Canonical final path:
-`/api/internet-proof-final`
+## Reviewed source identity
 
-## Reviewed source identities
+Git blob identity proves reviewed prep source identity only. It is NOT a substitute for final deploy-byte SHA-256.
 
-These are Git blob identities for the reviewed prep sources. They are NOT substitutes for the final deploy artifact SHA-256. After materialization, compute SHA-256 from the exact deploy bytes and attest that value separately.
-
-| Artifact | Prep source | Git blob | Intended destination | Runtime gate |
+| Artifact | Prep source | Current reviewed Git blob | Intended destination | Runtime gate |
 |---|---|---|---|---|
-| Proof executor | `proof_executor_candidate.ts.disabled` | `a4b823d3efc5f5b6c6bed90523973d175e36e74f` | Supabase Edge Function `pm-controlled-internet-executor-proof/index.ts` | `verify_jwt=true`; post-Stabilization only |
-| Redirect target | `proof_target_redirect.js.disabled` | `5ff62c9479f97c992046e984c204dccb8c0597b1` | Mission Control Hub `/api/internet-proof-redirect` | additive route; canonical Production origin only |
-| Final target | `proof_target_final.js.disabled` | `2bd498c3d4c1dae31577fc03a14f132116eb6ca9` | Mission Control Hub `/api/internet-proof-final` | additive route; canonical Production origin only |
+| Proof-only executor | `proof_executor_candidate.ts.disabled` | `5e93559e1bfff027649980b40bdacd409b80c7da` | Supabase Edge Function `pm-controlled-internet-executor-proof/index.ts` | `verify_jwt=true`; post-Stabilization only |
+
+No PM-owned redirect/final route is part of the canonical proof. The executor is hard-bound to `https://example.com/`; same-host HTTPS redirects are permitted up to 3 if observed, but zero redirects are valid.
 
 ## Mandatory post-Exit materialization sequence
 
 1. Re-read current Operating Manual and live Production schema.
-2. Confirm this PR head is current with master and still contains only reviewed Mission #18 prep changes.
-3. Verify the three Git blob identities above still match. If any source changed, this manifest is stale and review restarts.
-4. Materialize `.disabled` files into deployment locations without overwriting an existing route/artifact unless explicit Owner approval authorizes replacement.
-5. Run static validation on exact materialized bytes (`deno check` for executor; syntax/build check for Vercel target files).
-6. Compute SHA-256 of exact executor deploy bytes; record function slug/version/hash in `pm_internet_executor_release_artifact_attestation_v1` only after review.
-7. Deploy deterministic PM-owned target routes first. Verify canonical Production origin returns exact 302 same-host redirect then 200 final response. Preview origin is not evidence.
-8. Apply reviewed SQL/control-plane migration only after Stabilization Exit and current safety checks.
-9. Run cross-binding + negative-drift + authority + contract + concurrency checks.
-10. Request Fresh Owner Passkey only after technical readiness is true and every exact target binding agrees.
-11. Proof executor remains one-request only; general `production_network_enabled` remains false.
-12. After the attempt, finalize, relock, revoke/expire, and run post-proof regressions.
+2. Confirm this PR remains draft/unmerged until verified Stabilization Exit.
+3. Confirm the reviewed executor Git blob above still matches. If source changed, refresh this manifest and review again.
+4. Materialize the `.disabled` executor into a separate proof-only Edge Function; do not overwrite an existing Production artifact without explicit approval.
+5. Run static validation and type/syntax checks on exact materialized bytes.
+6. Compute SHA-256 of exact deploy bytes and record slug/version/hash in the release attestation only after review.
+7. Apply reviewed six-part control-plane implementation only after Stabilization Exit, with validation after each material change.
+8. Run cross-binding, negative-drift, contract, authority, Central/Action/Guardian, concurrency/failure-policy, and Recovery/Kill-Switch checks.
+9. Run runtime concurrency harness as soon as Production atomic reservation exists; require exactly one winner and zero DNS/network side effect in that test.
+10. Request fresh Owner Passkey only after technical implementation is complete and readiness reports `owner_action_required_now=true`.
+11. Exact Owner command must bind `TRANSPORT_PROOF_SINGLE_REQUEST`, `https://example.com/`, max one request, bounded unlock <=120s, grant <=10m, `PUBLIC_READ`, and general Production network false.
+12. After reservation, no automatic retry. Failed proof consumes the slot and requires fresh review/Owner approval.
+13. After proof attempt, finalize idempotently, relock, revoke/expire, and run full post-proof regressions.
 
 ## Fail-closed attestation rules
 
-- Git blob identity proves reviewed source identity only; it does not prove deployed bytes.
-- Final source SHA-256 must be calculated after materialization and before deployment/promotion.
 - Artifact hash mismatch = BLOCK.
 - Function slug/version mismatch = BLOCK.
 - `verify_jwt=false` on proof executor = BLOCK.
-- Any fallback to `example.com` = BLOCK.
+- Any target other than exact `https://example.com/` = BLOCK.
 - Any caller-selected target = BLOCK.
-- Preview/Vercel branch URL = not Owner authority and not Production proof.
-- Any requirement to set general `production_network_enabled=true` = design violation and BLOCK.
+- Any caller-supplied `signature_verified` accepted as authority = BLOCK.
+- Any approval endpoint that creates a grant, releases Lockdown, enables the proof lane, or enables network = BLOCK.
+- Any requirement to set general `production_network_enabled=true` = BLOCK.
+- Any reservation auto-release after a failed attempt = BLOCK.
