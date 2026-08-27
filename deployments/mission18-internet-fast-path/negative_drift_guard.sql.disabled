@@ -1,6 +1,6 @@
 -- PRE-STAGED READ-ONLY GUARD. DO NOT TREAT AS AUTHORITY.
 -- Run after reviewed post-freeze apply and before Fresh Owner Passkey.
--- PASS requires no stale example.com binding and no legacy grant-function readiness dependency.
+-- PASS requires exact example.com binding and no legacy/PM-owned target drift.
 
 with defs as (
   select p.proname, pg_get_functiondef(p.oid) as def
@@ -18,22 +18,22 @@ with defs as (
     )
 ), scan as (
   select
-    count(*) filter (where def like '%https://example.com/%') as stale_example_bindings,
+    count(*) filter (where def like '%https://example.com/%') as canonical_example_refs,
     count(*) filter (where def like '%pm_internet_create_bounded_pilot_grant_v1%') as legacy_grant_name_refs,
-    count(*) filter (where def like '%https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect%') as canonical_target_refs,
+    count(*) filter (where def like '%paojai-mission-control-hub.vercel.app/api/internet-proof-%') as forbidden_pm_target_refs,
     jsonb_agg(jsonb_build_object(
       'function',proname,
-      'stale_example',def like '%https://example.com/%',
+      'canonical_example',def like '%https://example.com/%',
       'legacy_grant_name',def like '%pm_internet_create_bounded_pilot_grant_v1%',
-      'canonical_target',def like '%https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect%'
+      'forbidden_pm_target',def like '%paojai-mission-control-hub.vercel.app/api/internet-proof-%'
     ) order by proname) as rows
   from defs
 )
 select jsonb_build_object(
-  'passed', stale_example_bindings=0 and legacy_grant_name_refs=0 and canonical_target_refs>=4,
-  'stale_example_bindings',stale_example_bindings,
+  'passed', canonical_example_refs>=4 and legacy_grant_name_refs=0 and forbidden_pm_target_refs=0,
+  'canonical_example_refs',canonical_example_refs,
   'legacy_grant_name_refs',legacy_grant_name_refs,
-  'canonical_target_refs',canonical_target_refs,
+  'forbidden_pm_target_refs',forbidden_pm_target_refs,
   'rows',rows,
   'production_mutation',false,
   'authority_expansion',false,
@@ -42,7 +42,7 @@ select jsonb_build_object(
 from scan;
 
 -- Mandatory interpretation:
--- stale_example_bindings must be 0.
+-- canonical_example_refs must cover the command/helper/grant/reservation/activation surfaces.
 -- legacy_grant_name_refs must be 0.
--- canonical_target_refs must cover the command/helper/grant/reservation/activation surfaces.
+-- forbidden_pm_target_refs must be 0.
 -- Any failure blocks Owner Passkey request and proof deployment; do not auto-fix by relaxing exact target checks.
