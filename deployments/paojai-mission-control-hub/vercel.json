@@ -1,5 +1,9 @@
 {
   "cleanUrls": true,
+  "redirects": [
+    { "source": "/internet-live", "destination": "/internet-live-v4", "permanent": false },
+    { "source": "/internet-live/", "destination": "/internet-live-v4/", "permanent": false }
+  ],
   "headers": [
     {
       "source": "/(.*)",
