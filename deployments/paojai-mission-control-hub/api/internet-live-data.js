@@ -10,18 +10,24 @@ export default async function handler(req,res){
     if(t) auth='Bearer '+t;
   }
   if(!auth.toLowerCase().startsWith('bearer ')) return res.status(401).json({ok:false,error:'OWNER_SESSION_REQUIRED'});
+  const ac=new AbortController();
+  const timer=setTimeout(()=>ac.abort(),4500);
   try{
     const r=await fetch('https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-internet-mission-live-data',{
       method:'GET',
       headers:{authorization:auth,'accept':'application/json'},
-      cache:'no-store'
+      cache:'no-store',
+      signal:ac.signal
     });
     const text=await r.text();
     res.status(r.status);
     res.setHeader('Content-Type',r.headers.get('content-type')||'application/json; charset=utf-8');
     return res.send(text);
   }catch(e){
-    console.error('INTERNET_LIVE_PROXY_FAILED',e instanceof Error?e.message:String(e));
-    return res.status(502).json({ok:false,error:'INTERNET_LIVE_PROXY_FAILED'});
+    const timedOut=e && (e.name==='AbortError'||String(e).includes('aborted'));
+    console.error(timedOut?'INTERNET_LIVE_PROXY_TIMEOUT':'INTERNET_LIVE_PROXY_FAILED',e instanceof Error?e.message:String(e));
+    return res.status(timedOut?504:502).json({ok:false,error:timedOut?'INTERNET_LIVE_PROXY_TIMEOUT':'INTERNET_LIVE_PROXY_FAILED'});
+  }finally{
+    clearTimeout(timer);
   }
 }
