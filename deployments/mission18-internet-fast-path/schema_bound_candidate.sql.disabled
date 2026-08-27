@@ -1,0 +1,289 @@
+-- PRE-STAGED CANDIDATE ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Generated against live PM schema on 2026-08-27.
+-- Must be re-reviewed against current Operating Manual + live schema after Stabilization Exit.
+-- This file is deliberately .disabled and MUST NOT be auto-deployed.
+
+begin;
+
+-- One-request token ledger. A consumed reservation is never auto-released.
+create table if not exists public.pm_internet_transport_proof_request_tokens_v1 (
+  request_token uuid primary key,
+  lane_key text not null,
+  source_command_id uuid not null references public.pm_signed_owner_commands_v1(command_id),
+  reserved_at timestamptz not null default now(),
+  finalized_at timestamptz,
+  outcome text,
+  evidence jsonb not null default '{}'::jsonb,
+  created_by text not null default 'pm_internet_transport_proof_reserve_request_v1'
+);
+
+revoke all on table public.pm_internet_transport_proof_request_tokens_v1 from public, anon, authenticated;
+grant select, insert, update on table public.pm_internet_transport_proof_request_tokens_v1 to service_role;
+
+-- Helper: exact fresh VERIFIED v3 command + consumed/allowed Owner gateway audit.
+create or replace function public.pm_internet_assert_verified_transport_command_v1(p_command_id uuid)
+returns public.pm_signed_owner_commands_v1
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  c public.pm_signed_owner_commands_v1%rowtype;
+  a public.pm_owner_command_gateway_audit_v1%rowtype;
+begin
+  select * into c
+  from public.pm_signed_owner_commands_v1
+  where command_id=p_command_id
+    and verification_state='VERIFIED'
+    and verified_at is not null
+    and expires_at>now()
+    and command_type='GRANT_CAPABILITY'
+    and action_scope='PUBLIC_READ'
+    and canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'
+    and canonical_payload->>'transport_proof_target_url'='https://example.com/'
+    and coalesce((canonical_payload->>'transport_proof_max_requests')::int,0)=1
+    and coalesce((canonical_payload->>'authorize_owner_lockdown_release_for_transport_proof_only')::boolean,false)=true
+    and coalesce((canonical_payload->>'owner_lockdown_release_max_seconds')::int,0) between 1 and 120
+    and coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false;
+  if not found then raise exception 'VERIFIED_TRANSPORT_PROOF_COMMAND_REQUIRED'; end if;
+
+  select * into a
+  from public.pm_owner_command_gateway_audit_v1
+  where command_key='internet-pilot:'||c.command_id::text
+    and owner_user_id=c.owner_user_id
+    and device_id=c.device_id
+    and nonce=c.nonce
+    and allowed=true
+    and nonce_consumed=true
+  order by observed_at desc limit 1;
+  if not found then raise exception 'OWNER_GATEWAY_AUDIT_REQUIRED'; end if;
+
+  return c;
+end;
+$$;
+revoke all on function public.pm_internet_assert_verified_transport_command_v1(uuid) from public, anon, authenticated;
+grant execute on function public.pm_internet_assert_verified_transport_command_v1(uuid) to service_role;
+
+-- Phase A: bounded unlock + proof lane arm. General production network stays false.
+create or replace function public.pm_internet_transport_proof_bounded_unlock_v1(p_command_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  c public.pm_signed_owner_commands_v1%rowtype;
+  s public.pm_stabilization_runs%rowtype;
+  ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
+  promo jsonb;
+  max_secs int;
+begin
+  c := public.pm_internet_assert_verified_transport_command_v1(p_command_id);
+
+  select * into s from public.pm_stabilization_runs order by period_start desc limit 1;
+  if not found or s.status='active' or s.feature_freeze or not s.autonomy_expansion_allowed or now()<s.period_end then
+    raise exception 'STABILIZATION_EXIT_NOT_VERIFIED';
+  end if;
+
+  promo := public.pm_internet_pilot_promotion_shadow_verify_v1(p_command_id);
+  if not coalesce((promo->>'would_promote')::boolean,false)
+     and coalesce(promo->'reasons','[]'::jsonb) <> '["OWNER_LOCKDOWN_ACTIVE"]'::jsonb then
+    raise exception 'PROMOTION_VERIFIER_NOT_READY';
+  end if;
+
+  select * into ctl
+  from public.pm_owner_internet_gateway_control_shadow_v1
+  where control_key='CONTROLLED_INTERNET_GATEWAY'
+  for update;
+  if not found then raise exception 'GATEWAY_CONTROL_MISSING'; end if;
+  if ctl.production_network_enabled then raise exception 'GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_DISABLED'; end if;
+
+  max_secs := least(120, greatest(1, (c.canonical_payload->>'owner_lockdown_release_max_seconds')::int));
+
+  update public.pm_owner_internet_gateway_control_shadow_v1
+  set owner_lockdown_active=false,
+      production_network_enabled=false,
+      mode='TRANSPORT_PROOF_SINGLE_REQUEST',
+      updated_by='pm_internet_transport_proof_bounded_unlock_v1',
+      evidence=coalesce(evidence,'{}'::jsonb) || jsonb_build_object(
+        'source_command_id',c.command_id,
+        'activation_scope','TRANSPORT_PROOF_SINGLE_REQUEST',
+        'unlock_expires_at',now()+make_interval(secs=>max_secs),
+        'general_production_network_authorized',false
+      ),
+      updated_at=now()
+  where control_key='CONTROLLED_INTERNET_GATEWAY';
+
+  update public.pm_internet_transport_proof_lane_v1
+  set enabled=true,
+      updated_by='pm_internet_transport_proof_bounded_unlock_v1',
+      updated_at=now()
+  where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+    and fixed_target_url='https://example.com/'
+    and max_requests=1
+    and network_request_count=0
+    and proof_completed=false;
+  if not found then raise exception 'PROOF_LANE_NOT_PRISTINE'; end if;
+
+  return jsonb_build_object('ok',true,'command_id',c.command_id,'unlock_max_seconds',max_secs,'production_network_enabled',false,'general_production_network_authorized',false);
+end;
+$$;
+revoke all on function public.pm_internet_transport_proof_bounded_unlock_v1(uuid) from public, anon, authenticated;
+grant execute on function public.pm_internet_transport_proof_bounded_unlock_v1(uuid) to service_role;
+
+-- Phase B: exact-command-bound low-risk PUBLIC_READ grant, <=10 minutes, non-delegable.
+create or replace function public.pm_internet_create_command_bound_pilot_grant_v1(p_command_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  c public.pm_signed_owner_commands_v1%rowtype;
+  g public.pm_agent_capability_grants_v1%rowtype;
+  ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
+begin
+  c := public.pm_internet_assert_verified_transport_command_v1(p_command_id);
+  select * into ctl from public.pm_owner_internet_gateway_control_shadow_v1 where control_key='CONTROLLED_INTERNET_GATEWAY';
+  if not found or ctl.owner_lockdown_active or ctl.production_network_enabled or ctl.mode<>'TRANSPORT_PROOF_SINGLE_REQUEST' then
+    raise exception 'BOUNDED_UNLOCK_REQUIRED';
+  end if;
+
+  select * into g from public.pm_agent_capability_grants_v1
+  where source_command_id=c.command_id
+    and grantee_agent_key='PAOJAI_OPERATIONS_AI'
+    and status='ACTIVE'
+    and expires_at>now()
+  order by created_at desc limit 1;
+  if found then return jsonb_build_object('ok',true,'grant_id',g.grant_id,'duplicate',true); end if;
+
+  insert into public.pm_agent_capability_grants_v1(
+    issuer_owner_user_id,grantee_agent_key,allowed_actions,allowed_resources,risk_ceiling,can_delegate,
+    valid_from,expires_at,status,source_command_id,evidence
+  ) values (
+    c.owner_user_id,'PAOJAI_OPERATIONS_AI',array['PUBLIC_READ'],
+    jsonb_build_object('fixed_target_url','https://example.com/','max_requests',1,'credentials',false,'download',false,'code_execution',false,'external_side_effects',false,'protected_data_egress',false,'cross_client_context',false),
+    'LOW',false,now(),least(c.expires_at,now()+interval '10 minutes'),'ACTIVE',c.command_id,
+    jsonb_build_object('activation_scope','TRANSPORT_PROOF_SINGLE_REQUEST','source_command_id',c.command_id,'general_production_network_authorized',false)
+  ) returning * into g;
+
+  return jsonb_build_object('ok',true,'grant_id',g.grant_id,'expires_at',g.expires_at,'duplicate',false);
+end;
+$$;
+revoke all on function public.pm_internet_create_command_bound_pilot_grant_v1(uuid) from public, anon, authenticated;
+grant execute on function public.pm_internet_create_command_bound_pilot_grant_v1(uuid) to service_role;
+
+-- Atomic reservation. Slot is consumed before DNS/network and never auto-released.
+create or replace function public.pm_internet_transport_proof_reserve_request_v1(p_request_token uuid, p_command_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  c public.pm_signed_owner_commands_v1%rowtype;
+  lane public.pm_internet_transport_proof_lane_v1%rowtype;
+  g public.pm_agent_capability_grants_v1%rowtype;
+begin
+  c := public.pm_internet_assert_verified_transport_command_v1(p_command_id);
+  if p_request_token is null then raise exception 'REQUEST_TOKEN_REQUIRED'; end if;
+
+  if exists(select 1 from public.pm_internet_transport_proof_request_tokens_v1 where request_token=p_request_token) then
+    return jsonb_build_object('ok',true,'request_token',p_request_token,'duplicate',true,'slot_consumed',true);
+  end if;
+
+  select * into g from public.pm_agent_capability_grants_v1
+  where source_command_id=c.command_id and grantee_agent_key='PAOJAI_OPERATIONS_AI'
+    and status='ACTIVE' and valid_from<=now() and expires_at>now()
+    and 'PUBLIC_READ'=any(allowed_actions) and risk_ceiling='LOW' and can_delegate=false
+  order by created_at desc limit 1;
+  if not found then raise exception 'BOUNDED_LIVE_GRANT_REQUIRED'; end if;
+
+  update public.pm_internet_transport_proof_lane_v1
+  set network_request_count=network_request_count+1,
+      updated_by='pm_internet_transport_proof_reserve_request_v1',updated_at=now()
+  where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+    and enabled=true and proof_completed=false
+    and fixed_target_url='https://example.com/' and max_requests=1
+    and network_request_count < max_requests
+  returning * into lane;
+  if not found then raise exception 'PROOF_REQUEST_SLOT_UNAVAILABLE'; end if;
+
+  insert into public.pm_internet_transport_proof_request_tokens_v1(request_token,lane_key,source_command_id,evidence)
+  values (p_request_token,lane.lane_key,c.command_id,jsonb_build_object('slot_consumed',true,'policy','FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE'));
+
+  return jsonb_build_object('ok',true,'request_token',p_request_token,'duplicate',false,'slot_consumed',true,'network_request_count',lane.network_request_count);
+end;
+$$;
+revoke all on function public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid) from public, anon, authenticated;
+grant execute on function public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid) to service_role;
+
+-- Idempotent finalize. Never decrements request count or reopens the lane.
+create or replace function public.pm_internet_transport_proof_finalize_request_v1(p_request_token uuid, p_outcome text, p_evidence jsonb default '{}'::jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  r public.pm_internet_transport_proof_request_tokens_v1%rowtype;
+  dns_ok boolean := false;
+  redir_ok boolean := false;
+  success boolean := false;
+begin
+  select * into r from public.pm_internet_transport_proof_request_tokens_v1 where request_token=p_request_token for update;
+  if not found then raise exception 'RESERVATION_NOT_FOUND'; end if;
+  if r.finalized_at is not null then
+    return jsonb_build_object('ok',true,'request_token',r.request_token,'duplicate_finalize',true,'outcome',r.outcome,'evidence',r.evidence);
+  end if;
+
+  dns_ok := coalesce((p_evidence->>'dns_connect_time_verified')::boolean,false);
+  redir_ok := coalesce((p_evidence->>'redirect_connect_time_verified')::boolean,false);
+  success := upper(coalesce(p_outcome,''))='SUCCESS' and dns_ok and redir_ok;
+
+  update public.pm_internet_transport_proof_request_tokens_v1
+  set finalized_at=now(),outcome=p_outcome,evidence=coalesce(p_evidence,'{}'::jsonb) || jsonb_build_object('slot_remains_consumed',true)
+  where request_token=p_request_token
+  returning * into r;
+
+  update public.pm_internet_transport_proof_lane_v1
+  set dns_pinning_evidence_collected = dns_pinning_evidence_collected or dns_ok,
+      redirect_revalidation_evidence_collected = redirect_revalidation_evidence_collected or redir_ok,
+      proof_completed = proof_completed or success,
+      enabled=false,
+      updated_by='pm_internet_transport_proof_finalize_request_v1',updated_at=now()
+  where lane_key=r.lane_key;
+
+  -- Fail-closed cleanup: relock immediately; general production network remains disabled.
+  update public.pm_owner_internet_gateway_control_shadow_v1
+  set owner_lockdown_active=true,production_network_enabled=false,mode='SHADOW_ONLY',
+      updated_by='pm_internet_transport_proof_finalize_request_v1',
+      evidence=coalesce(evidence,'{}'::jsonb)||jsonb_build_object('relocked_at',now(),'proof_request_token',p_request_token),updated_at=now()
+  where control_key='CONTROLLED_INTERNET_GATEWAY';
+
+  update public.pm_agent_capability_grants_v1
+  set status='REVOKED',updated_at=now(),evidence=coalesce(evidence,'{}'::jsonb)||jsonb_build_object('revoked_after_transport_proof',true,'request_token',p_request_token)
+  where source_command_id=r.source_command_id and grantee_agent_key='PAOJAI_OPERATIONS_AI' and status='ACTIVE';
+
+  return jsonb_build_object('ok',true,'request_token',r.request_token,'duplicate_finalize',false,'outcome',r.outcome,'proof_completed',success,'slot_remains_consumed',true,'owner_lockdown_active',true,'production_network_enabled',false);
+end;
+$$;
+revoke all on function public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb) from public, anon, authenticated;
+grant execute on function public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb) to service_role;
+
+-- Explicitly no anon/authenticated access to any mutation surface.
+revoke all on function public.pm_internet_transport_proof_bounded_unlock_v1(uuid) from public, anon, authenticated;
+revoke all on function public.pm_internet_create_command_bound_pilot_grant_v1(uuid) from public, anon, authenticated;
+revoke all on function public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid) from public, anon, authenticated;
+revoke all on function public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb) from public, anon, authenticated;
+
+commit;
+
+-- POST-EXIT REVIEW REQUIREMENTS BEFORE CONVERSION TO REAL MIGRATION:
+-- 1) Re-read Manual + current live schema and constraints.
+-- 2) Confirm accepted grant status values and artifact attestation state.
+-- 3) Confirm exact expected function signatures in pm_internet_post_freeze_contract_validation_v1().
+-- 4) Run on an isolated/non-production validation target first if available.
+-- 5) Run Authority Surface + Central/Action/Guardian + Recovery regressions.
+-- 6) Do not request Owner Passkey until technical_implementation_complete=true.
+-- 7) Do not deploy proof executor or perform network before fresh VERIFIED v3 Owner command.
