@@ -7,22 +7,28 @@ Goal: minimize elapsed time from Stabilization Exit to the first verified real H
 ## Mandatory sequence
 
 1. Confirm Stabilization Exit and all safety regressions pass.
-2. Apply reviewed post-freeze SQL package implementing only:
+2. Re-read current Operating Manual + live schema; rebase/update this package if state changed.
+3. Apply reviewed post-freeze SQL package implementing only:
    - `pm_internet_transport_proof_bounded_unlock_v1`
    - `pm_internet_create_command_bound_pilot_grant_v1`
    - `pm_internet_transport_proof_reserve_request_v1`
    - `pm_internet_transport_proof_finalize_request_v1`
-3. Run machine-readable implementation contract validation and authority-surface regression.
-4. Promote only an attested executor artifact to `APPROVED_FOR_PILOT`; no general production network authority.
-5. Deploy a separate proof-only edge artifact fixed to `https://example.com/`, one request maximum.
-6. Only after technical implementation is complete, request fresh Owner Passkey approval using v3 intent.
-7. Phase A: bounded Owner Lockdown release, scope `TRANSPORT_PROOF_SINGLE_REQUEST`, <=120 seconds, general production network remains false.
-8. Phase B: promotion verifier full pass; create exact-command-bound 10-minute `PAOJAI_OPERATIONS_AI` / `PUBLIC_READ` grant.
-9. Atomically reserve the one request slot before any DNS or network side effect.
-10. Execute pinned-IP TLS proof; same-host redirects only, max 3, timeout <=10s, response <=1 MiB, full audit.
-11. Collect direct DNS connect-time and redirect revalidation evidence.
-12. Immediately relock, expire/revoke grant, finalize request token idempotently, run Safety + Authority + Concurrency + Recovery regressions.
-13. Complete only if Production evidence has `network_request_performed=true` for exactly one allowed request and post-request lockdown is verified.
+4. Run `post_apply_verification.sql.disabled` after converting it into an explicitly reviewed execution step.
+5. Require machine-readable implementation contract validation + authority-surface regression.
+6. Promote only an attested executor artifact to `APPROVED_FOR_PILOT`; no general production network authority.
+7. Deploy a separate proof-only edge artifact conforming to `proof_executor_contract.ts.disabled`, fixed to `https://example.com/`, one request maximum.
+8. Only after technical implementation is complete, request fresh Owner Passkey approval using v3 intent.
+9. Phase A: bounded Owner Lockdown release, scope `TRANSPORT_PROOF_SINGLE_REQUEST`, <=120 seconds, general production network remains false.
+10. Phase B: promotion verifier full pass; create exact-command-bound 10-minute `PAOJAI_OPERATIONS_AI` / `PUBLIC_READ` grant.
+11. Atomically reserve the one request slot before any DNS or network side effect.
+12. Execute pinned-IP TLS proof; same-host redirects only, max 3, timeout <=10s, response <=1 MiB, full audit.
+13. Collect direct DNS connect-time, redirect revalidation and runtime concurrency evidence.
+14. Immediately relock, expire/revoke grant, finalize request token idempotently, run Safety + Authority + Contract + Concurrency + Recovery regressions.
+15. Complete only if Production evidence has `network_request_performed=true` for exactly one allowed request and post-request lockdown is verified.
+
+## Merge / activation gate
+
+This PR MUST remain draft and unmerged while Feature Freeze is active. After Stabilization Exit it still MUST NOT be merged/applied blindly. Before any merge/apply, re-check current Manual + Production schema and require current live safety evidence. If any contract, schema, artifact hash, Owner-security requirement or privilege model changed, update/re-review this package first.
 
 ## Fail-closed invariants
 
