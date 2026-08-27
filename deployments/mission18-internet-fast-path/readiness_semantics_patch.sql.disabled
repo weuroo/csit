@@ -1,0 +1,55 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Purpose: remove circular readiness semantics without weakening any safety gate.
+-- Runtime DNS/redirect evidence can only exist after a real bounded transport attempt,
+-- so it MUST gate proof completion, not permission to attempt the first proof.
+
+begin;
+
+create or replace function public.pm_internet_post_freeze_implementation_readiness_v2()
+returns jsonb
+language plpgsql
+stable
+set search_path='public','pg_temp'
+as $$
+declare
+  base jsonb := public.pm_internet_post_freeze_implementation_readiness_v1();
+  act jsonb := public.pm_internet_transport_proof_activation_gate_v1();
+  runtime_gaps jsonb := coalesce(base->'runtime_proof_gaps','[]'::jsonb);
+  tech_ready boolean := coalesce((base->>'technical_implementation_complete')::boolean,false);
+  verified_cmds int := coalesce((base->>'verified_owner_commands')::int,0);
+  activation_ready boolean := coalesce((act->>'ready_to_enable')::boolean,false);
+  attempt_ready boolean;
+  completion_ready boolean;
+begin
+  -- First real proof requires technical readiness + fresh verified Owner command + activation gate.
+  -- It deliberately does NOT require evidence that only the first real proof can generate.
+  attempt_ready := tech_ready and verified_cmds > 0 and activation_ready;
+
+  -- Completion still requires all direct runtime evidence to be closed.
+  completion_ready := attempt_ready and jsonb_array_length(runtime_gaps)=0;
+
+  return base || jsonb_build_object(
+    'mode','READ_ONLY_POST_FREEZE_READINESS_V2',
+    'ready_to_attempt_first_proof',attempt_ready,
+    'proof_completion_evidence_pending',jsonb_array_length(runtime_gaps)>0,
+    'ready_to_complete_proof',completion_ready,
+    'runtime_proof_gaps',runtime_gaps,
+    'semantics','RUNTIME_EVIDENCE_GATES_COMPLETION_NOT_FIRST_ATTEMPT',
+    'production_mutation',false,
+    'authority_expansion',false,
+    'network_request_performed',false
+  );
+end;
+$$;
+
+revoke all on function public.pm_internet_post_freeze_implementation_readiness_v2() from public, anon, authenticated;
+grant execute on function public.pm_internet_post_freeze_implementation_readiness_v2() to service_role;
+
+commit;
+
+-- POST-EXIT REVIEW REQUIREMENTS:
+-- 1. Do not replace v1 blindly. Compare current Manual + live functions first.
+-- 2. Owner Passkey remains required; this patch does not create or verify commands.
+-- 3. Activation gate remains authoritative for the first proof attempt.
+-- 4. DNS/redirect/runtime-concurrency evidence remains mandatory before proof completion.
+-- 5. General production network remains disabled throughout Mission #18.
