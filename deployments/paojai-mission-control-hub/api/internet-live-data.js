@@ -1,9 +1,14 @@
+function cookie(req,name){const raw=String(req.headers.cookie||'');for(const part of raw.split(';')){const i=part.indexOf('=');if(i<0)continue;const k=part.slice(0,i).trim();if(k===name)return decodeURIComponent(part.slice(i+1).trim())}return ''}
 export default async function handler(req,res){
   res.setHeader('Cache-Control','no-store');
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','no-referrer');
   if(req.method!=='GET') return res.status(405).json({ok:false,error:'METHOD_NOT_ALLOWED'});
-  const auth=String(req.headers.authorization||'');
+  let auth=String(req.headers.authorization||'');
+  if(!auth.toLowerCase().startsWith('bearer ')){
+    const t=cookie(req,'pm_owner_mission_session');
+    if(t) auth='Bearer '+t;
+  }
   if(!auth.toLowerCase().startsWith('bearer ')) return res.status(401).json({ok:false,error:'OWNER_SESSION_REQUIRED'});
   try{
     const r=await fetch('https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-internet-mission-live-data',{
