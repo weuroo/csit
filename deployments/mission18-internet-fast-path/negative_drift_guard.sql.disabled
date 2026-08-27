@@ -1,0 +1,48 @@
+-- PRE-STAGED READ-ONLY GUARD. DO NOT TREAT AS AUTHORITY.
+-- Run after reviewed post-freeze apply and before Fresh Owner Passkey.
+-- PASS requires no stale example.com binding and no legacy grant-function readiness dependency.
+
+with defs as (
+  select p.proname, pg_get_functiondef(p.oid) as def
+  from pg_proc p
+  join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public'
+    and p.proname in (
+      'pm_internet_assert_verified_transport_command_v1',
+      'pm_internet_transport_proof_bounded_unlock_v1',
+      'pm_internet_create_command_bound_pilot_grant_v1',
+      'pm_internet_transport_proof_reserve_request_v1',
+      'pm_internet_transport_proof_finalize_request_v1',
+      'pm_internet_transport_proof_activation_gate_v1',
+      'pm_internet_post_freeze_implementation_readiness_v3'
+    )
+), scan as (
+  select
+    count(*) filter (where def like '%https://example.com/%') as stale_example_bindings,
+    count(*) filter (where def like '%pm_internet_create_bounded_pilot_grant_v1%') as legacy_grant_name_refs,
+    count(*) filter (where def like '%https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect%') as canonical_target_refs,
+    jsonb_agg(jsonb_build_object(
+      'function',proname,
+      'stale_example',def like '%https://example.com/%',
+      'legacy_grant_name',def like '%pm_internet_create_bounded_pilot_grant_v1%',
+      'canonical_target',def like '%https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect%'
+    ) order by proname) as rows
+  from defs
+)
+select jsonb_build_object(
+  'passed', stale_example_bindings=0 and legacy_grant_name_refs=0 and canonical_target_refs>=4,
+  'stale_example_bindings',stale_example_bindings,
+  'legacy_grant_name_refs',legacy_grant_name_refs,
+  'canonical_target_refs',canonical_target_refs,
+  'rows',rows,
+  'production_mutation',false,
+  'authority_expansion',false,
+  'network_request_performed',false
+) as mission18_negative_drift_guard
+from scan;
+
+-- Mandatory interpretation:
+-- stale_example_bindings must be 0.
+-- legacy_grant_name_refs must be 0.
+-- canonical_target_refs must cover the command/helper/grant/reservation/activation surfaces.
+-- Any failure blocks Owner Passkey request and proof deployment; do not auto-fix by relaxing exact target checks.
