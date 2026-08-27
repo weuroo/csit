@@ -1,0 +1,47 @@
+// PRE-STAGED ONLY. DO NOT RUN AS A DEPLOY HOOK DURING FEATURE FREEZE.
+// Run locally/CI after post-Exit materialization and before any deployment.
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+
+const CANONICAL='https://paojai-mission-control-hub.vercel.app/api/internet-proof-redirect';
+const FINAL='/api/internet-proof-final';
+const files={
+  executor: process.argv[2],
+  redirect: process.argv[3],
+  final: process.argv[4],
+};
+if(!files.executor||!files.redirect||!files.final) throw new Error('USAGE: node validator executor redirect final');
+
+const read=(p)=>fs.readFileSync(p,'utf8');
+const sha256=(s)=>crypto.createHash('sha256').update(s).digest('hex');
+const src={executor:read(files.executor),redirect:read(files.redirect),final:read(files.final)};
+const failures=[];
+const requireText=(name,text,label)=>{if(!src[name].includes(text))failures.push(`${name}:MISSING_${label}`)};
+const forbidText=(name,text,label)=>{if(src[name].includes(text))failures.push(`${name}:FORBIDDEN_${label}`)};
+
+requireText('executor',CANONICAL,'CANONICAL_TARGET');
+requireText('executor',`EXPECTED_REDIRECT_PATH='${FINAL}'`,'EXPECTED_REDIRECT_PATH');
+requireText('executor','GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_DISABLED','GENERAL_NETWORK_FAIL_CLOSED');
+requireText('executor','pm_internet_transport_proof_reserve_request_v1','ATOMIC_RESERVATION');
+requireText('executor','pm_internet_transport_proof_finalize_request_v1','IDEMPOTENT_FINALIZE');
+requireText('executor','DETERMINISTIC_REDIRECT_EVIDENCE_REQUIRED','DIRECT_REDIRECT_EVIDENCE');
+forbidText('executor','https://example.com/','EXAMPLE_COM');
+forbidText('executor','production_network_enabled&&','GENERAL_NETWORK_ENABLE_DEPENDENCY');
+
+requireText('redirect',`Location','${FINAL}'`,'FINAL_REDIRECT');
+requireText('redirect',"status(302)",'HTTP_302');
+forbidText('redirect','req.query','CALLER_CONTROLLED_REDIRECT');
+forbidText('redirect','client','CLIENT_DATA_REFERENCE');
+requireText('final',"status(200)",'HTTP_200');
+requireText('final','sideEffects:false','NO_SIDE_EFFECTS');
+requireText('final','clientData:false','NO_CLIENT_DATA');
+
+const result={
+  passed: failures.length===0,
+  canonicalTarget:CANONICAL,
+  files,
+  sha256:{executor:sha256(src.executor),redirect:sha256(src.redirect),final:sha256(src.final)},
+  failures,
+};
+console.log(JSON.stringify(result,null,2));
+if(failures.length) process.exit(1);
