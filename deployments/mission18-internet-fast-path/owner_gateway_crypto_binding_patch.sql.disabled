@@ -1,15 +1,6 @@
--- PRE-STAGED ONLY. DO NOT APPLY DURING ACTIVE FEATURE FREEZE WITHOUT EXPLICIT SECURITY-FIX REVIEW.
--- Mission #18 security blocker discovered from live Production readiness:
--- pm_owner_gateway_crypto_binding_readiness_v1() reports
--- CALLER_ASSERTED_SIGNATURE_VERIFICATION_STILL_TRUSTED.
---
--- Goal: remove caller-supplied boolean signature authority from the Mission #18 path.
--- This patch intentionally creates a NEW v2 gateway contract rather than weakening/replacing
--- the existing v1 function blindly. The activation path must require v2 evidence before Owner Passkey.
---
--- Required invariant: the gateway independently derives cryptographic authority from a previously
--- server-verified, consumed WebAuthn step-up record bound to exact owner/device/credential/nonce/
--- payload hash/intent/origin/RP ID. p_signature_verified MUST NOT exist in the v2 authority contract.
+-- PRE-STAGED ONLY. DO NOT APPLY DURING ACTIVE FEATURE FREEZE.
+-- Mission #18 crypto-bound Owner Command Gateway v2 candidate.
+-- Removes caller-supplied signature authority and independently binds the exact one-request command.
 
 begin;
 
@@ -69,8 +60,7 @@ begin
     if nonce_row.command_hash is distinct from cmd.payload_hash then reasons:=array_append(reasons,'NONCE_PAYLOAD_HASH_MISMATCH'); end if;
   end if;
 
-  -- Independent cryptographic evidence derivation. The gateway reads the already-consumed
-  -- server-verified WebAuthn step-up itself; caller assertions are irrelevant.
+  -- Independent cryptographic evidence derivation from a consumed server-verified WebAuthn step-up.
   select * into step_row
   from public.pm_owner_passkey_stepup_challenges_v1 s
   where s.owner_user_id=cmd.owner_user_id
@@ -104,22 +94,48 @@ begin
   release_seconds:=coalesce((cmd.canonical_payload->>'owner_lockdown_release_max_seconds')::int,0);
   general_net:=coalesce((cmd.canonical_payload->>'general_production_network_authorized')::boolean,true);
 
+  -- Exact command-row semantics.
   if cmd.command_type <> 'GRANT_CAPABILITY' then reasons:=array_append(reasons,'COMMAND_TYPE_INVALID'); end if;
   if cmd.action_scope <> 'PUBLIC_READ' then reasons:=array_append(reasons,'ACTION_SCOPE_INVALID'); end if;
   if upper(coalesce(cmd.risk_level,'')) <> 'LOW' then reasons:=array_append(reasons,'RISK_SCOPE_INVALID'); end if;
   if cmd.auth_age_seconds is null or cmd.auth_age_seconds<0 or cmd.auth_age_seconds>180 then reasons:=array_append(reasons,'AUTH_NOT_FRESH'); end if;
+
+  -- Exact canonical payload semantics. Every authority-bearing field is independently checked here;
+  -- payload_hash alone is not treated as sufficient authority.
+  if cmd.canonical_payload->>'owner_user_id' <> cmd.owner_user_id::text then reasons:=array_append(reasons,'PAYLOAD_OWNER_MISMATCH'); end if;
+  if cmd.canonical_payload->>'device_id' <> cmd.device_id::text then reasons:=array_append(reasons,'PAYLOAD_DEVICE_MISMATCH'); end if;
+  if cmd.canonical_payload->>'command_type' <> 'GRANT_CAPABILITY' then reasons:=array_append(reasons,'PAYLOAD_COMMAND_TYPE_INVALID'); end if;
+  if cmd.canonical_payload->>'action_scope' <> 'PUBLIC_READ' then reasons:=array_append(reasons,'PAYLOAD_ACTION_SCOPE_INVALID'); end if;
+  if cmd.canonical_payload->>'capability_key' <> 'CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1' then reasons:=array_append(reasons,'PAYLOAD_CAPABILITY_INVALID'); end if;
+  if cmd.canonical_payload->>'grantee_agent_key' <> 'PAOJAI_OPERATIONS_AI' then reasons:=array_append(reasons,'PAYLOAD_GRANTEE_INVALID'); end if;
+  if cmd.canonical_payload->'allowed_actions' <> '["PUBLIC_READ"]'::jsonb then reasons:=array_append(reasons,'PAYLOAD_ALLOWED_ACTIONS_INVALID'); end if;
+  if upper(coalesce(cmd.canonical_payload->>'risk_level','')) <> 'LOW' then reasons:=array_append(reasons,'PAYLOAD_RISK_INVALID'); end if;
+  if coalesce((cmd.canonical_payload->>'can_delegate')::boolean,true) <> false then reasons:=array_append(reasons,'PAYLOAD_DELEGATION_INVALID'); end if;
+  if coalesce((cmd.canonical_payload->>'requested_grant_minutes')::int,0) <> 10 then reasons:=array_append(reasons,'PAYLOAD_GRANT_DURATION_INVALID'); end if;
   if activation_scope <> 'TRANSPORT_PROOF_SINGLE_REQUEST' then reasons:=array_append(reasons,'ACTIVATION_SCOPE_INVALID'); end if;
   if target_url <> 'https://example.com/' then reasons:=array_append(reasons,'TARGET_BINDING_INVALID'); end if;
   if max_requests <> 1 then reasons:=array_append(reasons,'MAX_REQUESTS_INVALID'); end if;
   if not release_ok or release_seconds <> 120 then reasons:=array_append(reasons,'LOCKDOWN_RELEASE_BINDING_INVALID'); end if;
   if general_net then reasons:=array_append(reasons,'GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_FALSE'); end if;
+  if cmd.canonical_payload#>>'{allowed_resources,scheme}' <> 'https' then reasons:=array_append(reasons,'RESOURCE_SCHEME_INVALID'); end if;
   if cmd.canonical_payload#>>'{allowed_resources,fixed_target_url}' <> 'https://example.com/' then reasons:=array_append(reasons,'RESOURCE_TARGET_BINDING_INVALID'); end if;
+  if coalesce((cmd.canonical_payload#>>'{allowed_resources,public_internet_only}')::boolean,false) <> true then reasons:=array_append(reasons,'PUBLIC_INTERNET_ONLY_REQUIRED'); end if;
   if coalesce((cmd.canonical_payload#>>'{allowed_resources,credentials}')::boolean,true) then reasons:=array_append(reasons,'CREDENTIALS_FORBIDDEN'); end if;
   if coalesce((cmd.canonical_payload#>>'{allowed_resources,downloads}')::boolean,true) then reasons:=array_append(reasons,'DOWNLOADS_FORBIDDEN'); end if;
   if coalesce((cmd.canonical_payload#>>'{allowed_resources,code_execution}')::boolean,true) then reasons:=array_append(reasons,'CODE_EXECUTION_FORBIDDEN'); end if;
   if coalesce((cmd.canonical_payload#>>'{allowed_resources,external_side_effects}')::boolean,true) then reasons:=array_append(reasons,'EXTERNAL_SIDE_EFFECTS_FORBIDDEN'); end if;
   if coalesce((cmd.canonical_payload#>>'{allowed_resources,protected_data_egress}')::boolean,true) then reasons:=array_append(reasons,'PROTECTED_DATA_EGRESS_FORBIDDEN'); end if;
   if coalesce((cmd.canonical_payload#>>'{allowed_resources,cross_client_context}')::boolean,true) then reasons:=array_append(reasons,'CROSS_CLIENT_CONTEXT_FORBIDDEN'); end if;
+
+  -- Exact resource_scope cross-binding prevents divergence between the signed command envelope and helpers.
+  if cmd.resource_scope->>'capability_key' <> 'CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1' then reasons:=array_append(reasons,'RESOURCE_SCOPE_CAPABILITY_INVALID'); end if;
+  if cmd.resource_scope->>'grantee_agent_key' <> 'PAOJAI_OPERATIONS_AI' then reasons:=array_append(reasons,'RESOURCE_SCOPE_GRANTEE_INVALID'); end if;
+  if cmd.resource_scope->>'activation_scope' <> 'TRANSPORT_PROOF_SINGLE_REQUEST' then reasons:=array_append(reasons,'RESOURCE_SCOPE_ACTIVATION_INVALID'); end if;
+  if cmd.resource_scope->>'transport_proof_target_url' <> 'https://example.com/' then reasons:=array_append(reasons,'RESOURCE_SCOPE_TARGET_INVALID'); end if;
+  if coalesce((cmd.resource_scope->>'transport_proof_max_requests')::int,0) <> 1 then reasons:=array_append(reasons,'RESOURCE_SCOPE_MAX_REQUESTS_INVALID'); end if;
+  if coalesce((cmd.resource_scope->>'authorize_owner_lockdown_release_for_transport_proof_only')::boolean,false) <> true then reasons:=array_append(reasons,'RESOURCE_SCOPE_UNLOCK_AUTH_INVALID'); end if;
+  if coalesce((cmd.resource_scope->>'owner_lockdown_release_max_seconds')::int,0) <> 120 then reasons:=array_append(reasons,'RESOURCE_SCOPE_UNLOCK_SECONDS_INVALID'); end if;
+  if coalesce((cmd.resource_scope->>'general_production_network_authorized')::boolean,true) <> false then reasons:=array_append(reasons,'RESOURCE_SCOPE_GENERAL_NETWORK_INVALID'); end if;
 
   if coalesce(array_length(reasons,1),0)=0 then
     update public.pm_owner_command_nonces_v1 set consumed_at=now()
@@ -142,7 +158,8 @@ begin
     'allowed',coalesce(array_length(reasons,1),0)=0 and consumed,
     'decision_code',case when coalesce(array_length(reasons,1),0)=0 and consumed then 'ALLOW_CRYPTO_BOUND_V2' else 'BLOCK_CRYPTO_BOUND_V2' end,
     'reasons',to_jsonb(reasons),'nonce_consumed',consumed,'crypto_bound',true,
-    'caller_asserted_signature_authority',false,'trusted_credential_bound',step_row.credential_id is not null,
+    'exact_payload_bound',true,'caller_asserted_signature_authority',false,
+    'trusted_credential_bound',step_row.credential_id is not null,
     'fresh_verified_stepup_required',true,'production_network_enabled',false);
 end;
 $$;
@@ -152,13 +169,12 @@ grant execute on function public.pm_owner_command_gateway_v2(uuid,text) to servi
 
 commit;
 
--- REQUIRED FOLLOW-UP BEFORE FIRST OWNER PASSKEY:
--- 1. Approval Edge v5+ must call ONLY pm_owner_command_gateway_v2(command_id, source_component).
--- 2. Approval Edge must never send signature_verified=true to any authority function.
--- 3. Promote pm_signed_owner_commands_v1 to VERIFIED only after v2 returns allowed=true and nonce_consumed=true.
--- 4. verification_reason must record CRYPTO_BOUND_GATEWAY_V2.
--- 5. Mission #18 activation/transport helpers must require audit decision_code='ALLOW_CRYPTO_BOUND_V2'
---    and source_component='pm-owner-internet-pilot-approval-shadow-v5'.
--- 6. pm_owner_gateway_crypto_binding_readiness_v2() must pass before technical readiness.
--- 7. v1 gateway must never be accepted as Mission #18 proof authority.
--- 8. This patch does not unlock Owner Lockdown, create grants, enable proof lane, or enable network.
+-- REQUIRED BEFORE FIRST OWNER PASSKEY:
+-- 1. Approval Edge v5+ calls only pm_owner_command_gateway_v2(command_id, source_component).
+-- 2. No authority function accepts caller-supplied signature_verified.
+-- 3. Promote command to VERIFIED only after allowed=true + nonce_consumed=true + exact_payload_bound=true.
+-- 4. verification_reason='CRYPTO_BOUND_GATEWAY_V2'.
+-- 5. Transport helpers require ALLOW_CRYPTO_BOUND_V2 audit + exact v5 source component.
+-- 6. Crypto-binding readiness AND exact-payload-binding readiness must pass.
+-- 7. Legacy v1 gateway is never accepted as Mission #18 authority.
+-- 8. This function never unlocks Owner Lockdown, creates grants, enables proof lane, or enables network.
