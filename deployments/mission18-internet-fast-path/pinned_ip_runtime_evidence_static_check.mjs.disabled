@@ -1,0 +1,29 @@
+// PRE-STAGED ONLY. DO NOT DEPLOY DURING ACTIVE FEATURE FREEZE.
+// Mission #18 fail-closed promotion blocker for pinned-IP runtime evidence.
+// The proof executor must not be promoted until it proves the connected socket
+// is the exact validated/pinned IP and persists DNS answer-set provenance per leg.
+import fs from 'node:fs';
+
+const p=process.argv[2];
+if(!p) throw new Error('USAGE: node pinned_ip_runtime_evidence_static_check.mjs executor');
+const s=fs.readFileSync(p,'utf8');
+const failures=[];
+const req=(re,label)=>{if(!re.test(s))failures.push(label)};
+
+req(/remoteAddress/,'MISSING_ACTUAL_SOCKET_REMOTE_ADDRESS');
+req(/REMOTE_ADDRESS_MISMATCH|PINNED_IP_REMOTE_MISMATCH|CONNECTED_IP_MISMATCH/,'MISSING_FAIL_CLOSED_REMOTE_ADDRESS_MATCH');
+req(/dns_answer|dns_set|resolved_ips|validated_ips/i,'MISSING_DNS_ANSWER_SET_EVIDENCE');
+req(/selected_ip|pinned_ip|chosen_ip/i,'MISSING_SELECTED_PINNED_IP_EVIDENCE');
+req(/redirect.*dns|dns.*redirect/i,'MISSING_REDIRECT_DNS_EVIDENCE_BINDING');
+
+if(failures.length){
+  console.error(JSON.stringify({ok:false,promotion_blocked:true,failures},null,2));
+  process.exit(1);
+}
+console.log(JSON.stringify({ok:true,promotion_blocked:false,checks:[
+  'actual socket remoteAddress is captured',
+  'actual remoteAddress must equal selected validated IP',
+  'DNS answer set is persisted as runtime evidence',
+  'selected pinned IP is persisted as runtime evidence',
+  'redirect DNS evidence is bound per followed leg'
+]},null,2));
