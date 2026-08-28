@@ -1,17 +1,7 @@
 -- PRE-STAGED ONLY. DO NOT APPLY DURING ACTIVE FEATURE FREEZE.
 -- Mission #18 exact-payload authority review.
---
--- Crypto-bound WebAuthn + nonce/payload_hash binding is necessary but not sufficient if the
--- gateway does not independently enforce every authority-bearing field. A service-role caller
--- must never be able to reuse an approved payload_hash while changing an unchecked command field.
---
--- Read-only readiness helper. Review/apply only after Stabilization Exit, after gateway v2 exists,
--- and before fresh Owner Passkey is requested.
---
--- IMPORTANT: this verifier intentionally matches the actual fail-closed IF/reason structure of
--- pm_owner_command_gateway_v2. Earlier prep searched for equality expressions such as
--- canonical_payload->>'owner_user_id'=cmd.owner_user_id::text, while the gateway correctly enforces
--- the inverse mismatch form (<> ... then PAYLOAD_*_MISMATCH). That caused false readiness failures.
+-- Read-only readiness helper; review/apply only after Stabilization Exit and gateway v2 exists.
+-- Matches the actual fail-closed mismatch/reason structure of pm_owner_command_gateway_v2.
 
 create or replace function public.pm_owner_gateway_exact_payload_binding_readiness_v1()
 returns jsonb
@@ -22,26 +12,23 @@ as $$
 with f as (
   select coalesce(pg_get_functiondef(to_regprocedure('public.pm_owner_command_gateway_v2(uuid,text)')),'') as src
 ), n as (
-  select src, replace(replace(replace(src,E'\n',''),' ',''),E'\t','') as compact
-  from f
+  select src, replace(replace(replace(src,E'\n',''),' ',''),E'\t','') as compact from f
 ), checks as (
   select
-    src <> '' as gateway_v2_present,
+    src<>'' as gateway_v2_present,
     position('p_signature_verified' in src)=0 as no_caller_signature_boolean,
-
     position($q$cmd.canonical_payload->>'owner_user_id'$q$ in src)>0 and position('PAYLOAD_OWNER_MISMATCH' in src)>0 as owner_bound,
     position($q$cmd.canonical_payload->>'device_id'$q$ in src)>0 and position('PAYLOAD_DEVICE_MISMATCH' in src)>0 as device_bound,
     position($q$cmd.canonical_payload->>'capability_key'$q$ in src)>0 and position('PAYLOAD_CAPABILITY_INVALID' in src)>0 as capability_bound,
     position($q$cmd.canonical_payload->>'grantee_agent_key'$q$ in src)>0 and position('PAYLOAD_GRANTEE_INVALID' in src)>0 as grantee_bound,
     position($q$cmd.canonical_payload->'allowed_actions'$q$ in src)>0 and position('PAYLOAD_ALLOWED_ACTIONS_INVALID' in src)>0 and position($q$["PUBLIC_READ"]$q$ in src)>0 as exact_allowed_actions_bound,
-    position($q$cmd.canonical_payload->>'requested_grant_minutes'$q$ in src)>0 and position('PAYLOAD_GRANT_DURATION_INVALID' in src)>0 and position('=10' in compact)>0 as exact_grant_minutes_bound,
+    position($q$cmd.canonical_payload->>'requested_grant_minutes'$q$ in src)>0 and position('PAYLOAD_GRANT_DURATION_INVALID' in src)>0 and position('<>10' in compact)>0 as exact_grant_minutes_bound,
     position($q$cmd.canonical_payload->>'can_delegate'$q$ in src)>0 and position('PAYLOAD_DELEGATION_INVALID' in src)>0 as no_delegation_bound,
     position($q$cmd.canonical_payload->>'activation_scope'$q$ in src)>0 and position('ACTIVATION_SCOPE_INVALID' in src)>0 and position('TRANSPORT_PROOF_SINGLE_REQUEST' in src)>0 as activation_scope_bound,
     position($q$cmd.canonical_payload->>'transport_proof_target_url'$q$ in src)>0 and position('TARGET_BINDING_INVALID' in src)>0 and position('https://example.com/' in src)>0 as target_bound,
     position($q$cmd.canonical_payload->>'transport_proof_max_requests'$q$ in src)>0 and position('MAX_REQUESTS_INVALID' in src)>0 as one_request_bound,
     position($q$cmd.canonical_payload->>'owner_lockdown_release_max_seconds'$q$ in src)>0 and position('LOCKDOWN_RELEASE_BINDING_INVALID' in src)>0 and position('release_seconds<>120' in compact)>0 as bounded_unlock_bound,
     position($q$cmd.canonical_payload->>'general_production_network_authorized'$q$ in src)>0 and position('GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_FALSE' in src)>0 as general_network_false_bound,
-
     position($q$cmd.canonical_payload#>>'{allowed_resources,scheme}'$q$ in src)>0 and position('RESOURCE_SCHEME_INVALID' in src)>0 as resource_scheme_bound,
     position($q$cmd.canonical_payload#>>'{allowed_resources,fixed_target_url}'$q$ in src)>0 and position('RESOURCE_TARGET_BINDING_INVALID' in src)>0 as resource_target_bound,
     position($q$cmd.canonical_payload#>>'{allowed_resources,public_internet_only}'$q$ in src)>0 and position('PUBLIC_INTERNET_ONLY_REQUIRED' in src)>0 as public_internet_only_bound,
@@ -51,7 +38,6 @@ with f as (
     position($q$cmd.canonical_payload#>>'{allowed_resources,external_side_effects}'$q$ in src)>0 and position('EXTERNAL_SIDE_EFFECTS_FORBIDDEN' in src)>0 as external_side_effects_forbidden_bound,
     position($q$cmd.canonical_payload#>>'{allowed_resources,protected_data_egress}'$q$ in src)>0 and position('PROTECTED_DATA_EGRESS_FORBIDDEN' in src)>0 as protected_data_egress_forbidden_bound,
     position($q$cmd.canonical_payload#>>'{allowed_resources,cross_client_context}'$q$ in src)>0 and position('CROSS_CLIENT_CONTEXT_FORBIDDEN' in src)>0 as cross_client_context_forbidden_bound,
-
     position($q$cmd.resource_scope->>'capability_key'$q$ in src)>0 and position('RESOURCE_SCOPE_CAPABILITY_INVALID' in src)>0 as resource_scope_capability_bound,
     position($q$cmd.resource_scope->>'grantee_agent_key'$q$ in src)>0 and position('RESOURCE_SCOPE_GRANTEE_INVALID' in src)>0 as resource_scope_grantee_bound,
     position($q$cmd.resource_scope->>'activation_scope'$q$ in src)>0 and position('RESOURCE_SCOPE_ACTIVATION_INVALID' in src)>0 as resource_scope_activation_bound,
@@ -63,60 +49,32 @@ with f as (
   from n
 )
 select jsonb_build_object(
-  'passed', gateway_v2_present and no_caller_signature_boolean and owner_bound and device_bound and
-            capability_bound and grantee_bound and exact_allowed_actions_bound and exact_grant_minutes_bound and
-            no_delegation_bound and activation_scope_bound and target_bound and one_request_bound and
-            bounded_unlock_bound and general_network_false_bound and resource_scheme_bound and resource_target_bound and
-            public_internet_only_bound and credentials_forbidden_bound and downloads_forbidden_bound and
-            code_execution_forbidden_bound and external_side_effects_forbidden_bound and protected_data_egress_forbidden_bound and
-            cross_client_context_forbidden_bound and resource_scope_capability_bound and resource_scope_grantee_bound and
-            resource_scope_activation_bound and resource_scope_target_bound and resource_scope_one_request_bound and
-            resource_scope_unlock_auth_bound and resource_scope_unlock_seconds_bound and resource_scope_general_network_false_bound,
-  'gateway_v2_present',gateway_v2_present,
-  'no_caller_signature_boolean',no_caller_signature_boolean,
-  'owner_bound',owner_bound,
-  'device_bound',device_bound,
-  'capability_bound',capability_bound,
-  'grantee_bound',grantee_bound,
-  'exact_allowed_actions_bound',exact_allowed_actions_bound,
-  'exact_grant_minutes_bound',exact_grant_minutes_bound,
-  'no_delegation_bound',no_delegation_bound,
-  'activation_scope_bound',activation_scope_bound,
-  'target_bound',target_bound,
-  'one_request_bound',one_request_bound,
-  'bounded_unlock_bound',bounded_unlock_bound,
-  'general_network_false_bound',general_network_false_bound,
-  'resource_scheme_bound',resource_scheme_bound,
-  'resource_target_bound',resource_target_bound,
-  'public_internet_only_bound',public_internet_only_bound,
-  'credentials_forbidden_bound',credentials_forbidden_bound,
-  'downloads_forbidden_bound',downloads_forbidden_bound,
-  'code_execution_forbidden_bound',code_execution_forbidden_bound,
-  'external_side_effects_forbidden_bound',external_side_effects_forbidden_bound,
-  'protected_data_egress_forbidden_bound',protected_data_egress_forbidden_bound,
-  'cross_client_context_forbidden_bound',cross_client_context_forbidden_bound,
-  'resource_scope_capability_bound',resource_scope_capability_bound,
-  'resource_scope_grantee_bound',resource_scope_grantee_bound,
-  'resource_scope_activation_bound',resource_scope_activation_bound,
-  'resource_scope_target_bound',resource_scope_target_bound,
-  'resource_scope_one_request_bound',resource_scope_one_request_bound,
-  'resource_scope_unlock_auth_bound',resource_scope_unlock_auth_bound,
-  'resource_scope_unlock_seconds_bound',resource_scope_unlock_seconds_bound,
-  'resource_scope_general_network_false_bound',resource_scope_general_network_false_bound,
-  'authority_expansion',false,
-  'production_mutation',false,
-  'network_request_performed',false,
+  'passed',gateway_v2_present and no_caller_signature_boolean and owner_bound and device_bound and capability_bound and grantee_bound and
+    exact_allowed_actions_bound and exact_grant_minutes_bound and no_delegation_bound and activation_scope_bound and target_bound and one_request_bound and
+    bounded_unlock_bound and general_network_false_bound and resource_scheme_bound and resource_target_bound and public_internet_only_bound and
+    credentials_forbidden_bound and downloads_forbidden_bound and code_execution_forbidden_bound and external_side_effects_forbidden_bound and
+    protected_data_egress_forbidden_bound and cross_client_context_forbidden_bound and resource_scope_capability_bound and resource_scope_grantee_bound and
+    resource_scope_activation_bound and resource_scope_target_bound and resource_scope_one_request_bound and resource_scope_unlock_auth_bound and
+    resource_scope_unlock_seconds_bound and resource_scope_general_network_false_bound,
+  'gateway_v2_present',gateway_v2_present,'no_caller_signature_boolean',no_caller_signature_boolean,
+  'owner_bound',owner_bound,'device_bound',device_bound,'capability_bound',capability_bound,'grantee_bound',grantee_bound,
+  'exact_allowed_actions_bound',exact_allowed_actions_bound,'exact_grant_minutes_bound',exact_grant_minutes_bound,'no_delegation_bound',no_delegation_bound,
+  'activation_scope_bound',activation_scope_bound,'target_bound',target_bound,'one_request_bound',one_request_bound,'bounded_unlock_bound',bounded_unlock_bound,
+  'general_network_false_bound',general_network_false_bound,'resource_scheme_bound',resource_scheme_bound,'resource_target_bound',resource_target_bound,
+  'public_internet_only_bound',public_internet_only_bound,'credentials_forbidden_bound',credentials_forbidden_bound,'downloads_forbidden_bound',downloads_forbidden_bound,
+  'code_execution_forbidden_bound',code_execution_forbidden_bound,'external_side_effects_forbidden_bound',external_side_effects_forbidden_bound,
+  'protected_data_egress_forbidden_bound',protected_data_egress_forbidden_bound,'cross_client_context_forbidden_bound',cross_client_context_forbidden_bound,
+  'resource_scope_capability_bound',resource_scope_capability_bound,'resource_scope_grantee_bound',resource_scope_grantee_bound,
+  'resource_scope_activation_bound',resource_scope_activation_bound,'resource_scope_target_bound',resource_scope_target_bound,
+  'resource_scope_one_request_bound',resource_scope_one_request_bound,'resource_scope_unlock_auth_bound',resource_scope_unlock_auth_bound,
+  'resource_scope_unlock_seconds_bound',resource_scope_unlock_seconds_bound,'resource_scope_general_network_false_bound',resource_scope_general_network_false_bound,
+  'authority_expansion',false,'production_mutation',false,'network_request_performed',false,
   'required_if_failed','Harden pm_owner_command_gateway_v2 so every authority-bearing canonical_payload and resource_scope field is exact-bound before Owner Passkey.'
-)
-from checks;
+) from checks;
 $$;
 
 revoke all on function public.pm_owner_gateway_exact_payload_binding_readiness_v1() from public, anon, authenticated;
 grant execute on function public.pm_owner_gateway_exact_payload_binding_readiness_v1() to service_role;
 
--- PASS REQUIRED BEFORE OWNER PASSKEY:
--- - gateway v2 independently derives WebAuthn authority
--- - exact command payload and resource_scope are fully bound
--- - command helper independently re-checks the same exact semantics
--- - no legacy v1 gateway audit is accepted
--- - approval endpoint has no grant/unlock/lane/network side effects
+-- PASS REQUIRED BEFORE OWNER PASSKEY: crypto-bound v2 authority, exact payload/resource scope,
+-- crypto-bound helper semantics, no legacy v1 audit acceptance, approval endpoint has no authority side effects.
