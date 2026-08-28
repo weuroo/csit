@@ -111,8 +111,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
-            < "$RESTORE_DIR/plain/roles.sql"
+
+          # A local Supabase Postgres image already owns several platform-managed roles.
+          # Replay roles.sql without ON_ERROR_STOP, then allow only the known
+          # reserved-role protection emitted by the local Supabase image.
+          set +e
+          docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres \
+            < "$RESTORE_DIR/plain/roles.sql" \
+            > "$RESTORE_DIR/roles-restore.log" 2>&1
+          ROLE_RC=$?
+          set -e
+
+          if grep -q '^ERROR:' "$RESTORE_DIR/roles-restore.log"; then
+            UNEXPECTED_ROLE_ERRORS="$(grep '^ERROR:' "$RESTORE_DIR/roles-restore.log" | grep -vE 'reserved role, only superusers can modify it' || true)"
+            if [[ -n "$UNEXPECTED_ROLE_ERRORS" ]]; then
+              echo "::error::Unexpected role restore error(s):"
+              printf '%s\n' "$UNEXPECTED_ROLE_ERRORS"
+              exit 41
+            fi
+            echo "Expected Supabase-managed reserved-role protections were observed and tolerated for isolated verification."
+          elif [[ "$ROLE_RC" -ne 0 ]]; then
+            echo "::error::roles.sql exited non-zero without a recognized managed-role error."
+            tail -100 "$RESTORE_DIR/roles-restore.log" || true
+            exit 42
+          else
+            echo "roles.sql replay completed without errors."
+          fi
+
           docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
             < "$RESTORE_DIR/plain/schema.sql"
           {
