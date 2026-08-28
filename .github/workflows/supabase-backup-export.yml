@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           umask 077
           tar -C "$BACKUP_DIR/plain" -czf "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz" .
-          printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | age --encrypt --passphrase --output "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.age" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
+          AGE_PASSPHRASE="$BACKUP_ENCRYPTION_PASSPHRASE" age --encrypt --passphrase --output "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.age" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
           sha256sum "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.age" > "$BACKUP_DIR/ARTIFACT_SHA256SUMS"
           rm -rf "$BACKUP_DIR/plain" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
 
