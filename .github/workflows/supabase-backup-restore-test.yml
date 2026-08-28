@@ -107,7 +107,7 @@ jobs:
           docker logs "$DB_CONTAINER" --tail 100 || true
           exit 40
 
-      - name: Restore application schema and data
+      - name: Restore application schema and public data
         shell: bash
         run: |
           set -euo pipefail
@@ -136,8 +136,6 @@ jobs:
             END { if (!injected) exit 46 }
           ' "$RESTORE_DIR/plain/schema.sql" > "$RESTORE_DIR/schema-isolated.sql"
 
-          # Replay schema without ON_ERROR_STOP only so platform-managed role
-          # mismatches can be classified. Application-object errors remain fatal.
           set +e
           docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres \
             < "$RESTORE_DIR/schema-isolated.sql" \
@@ -167,10 +165,29 @@ jobs:
             exit 45
           fi
 
-          # Data restore remains strict/fail-closed.
+          # The encrypted backup contains platform data (auth/storage/etc.) as
+          # well as application data. Platform schemas are version-managed by
+          # Supabase and do not match a standalone image reliably. Extract only
+          # COPY blocks and sequence setvals for public application objects.
+          awk '
+            BEGIN { keep=0; blocks=0 }
+            /^COPY "public"\./ {
+              keep=1; blocks++; print; next
+            }
+            keep {
+              print
+              if ($0 == "\\.") keep=0
+              next
+            }
+            /^SELECT pg_catalog\.setval\('\''public\./ { print }
+            END { if (blocks == 0) exit 47 }
+          ' "$RESTORE_DIR/plain/data.sql" > "$RESTORE_DIR/data-public.sql"
+
+          echo "Public COPY blocks selected for isolated application restore: $(grep -c '^COPY \"public\"\.' "$RESTORE_DIR/data-public.sql")"
+
           {
             echo 'SET session_replication_role = replica;'
-            cat "$RESTORE_DIR/plain/data.sql"
+            cat "$RESTORE_DIR/data-public.sql"
             echo 'SET session_replication_role = origin;'
           } | docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres
 
@@ -185,18 +202,29 @@ jobs:
             echo "::error::Restored public table count does not match backup evidence."
             exit 50
           fi
+
           KEY_TABLE="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select case when to_regclass('public.pm_observability_incidents') is not null then 'present' else 'missing' end;" | tr -d '[:space:]')"
           if [[ "$KEY_TABLE" != "present" ]]; then
             echo "::error::Key operational table pm_observability_incidents is missing after restore."
             exit 51
           fi
+
           KEY_VIEW="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select case when to_regclass('public.pm_system_development_recorder_health_v1') is not null then 'present' else 'missing' end;" | tr -d '[:space:]')"
           if [[ "$KEY_VIEW" != "present" ]]; then
             echo "::error::Key application view pm_system_development_recorder_health_v1 is missing after restore."
             exit 52
           fi
-          echo "APPLICATION_RESTORE_VERIFIED: encrypted backup restored application schema/data with expected public schema evidence."
-          echo "NOTE: Supabase control-plane managed roles are integrity-checked in roles.sql but are not recreated by this isolated lane."
+
+          LEDGER_ROWS="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select count(*) from public.pm_system_development_ledger_v1;" | tr -d '[:space:]')"
+          INCIDENT_ROWS="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select count(*) from public.pm_observability_incidents;" | tr -d '[:space:]')"
+          echo "Restored application evidence rows: ledger=$LEDGER_ROWS incidents=$INCIDENT_ROWS"
+          if [[ "${LEDGER_ROWS:-0}" -le 0 || "${INCIDENT_ROWS:-0}" -le 0 ]]; then
+            echo "::error::Key application tables exist but restored row evidence is missing."
+            exit 53
+          fi
+
+          echo "APPLICATION_RESTORE_VERIFIED: encrypted backup restored public application schema and data with non-empty operational evidence."
+          echo "NOTE: Supabase-managed control-plane roles and platform-schema data remain integrity-backed in the encrypted backup but are not replay-verified by this standalone lane."
 
       - name: Cleanup plaintext and isolated database
         if: always()
