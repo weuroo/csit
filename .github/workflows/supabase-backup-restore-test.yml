@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   restore-test:
-    name: Isolated restore verification
+    name: Isolated application restore verification
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -85,7 +85,7 @@ jobs:
               exit 32
             fi
           done
-          echo "Inner dump-file checksums verified."
+          echo "Inner dump-file checksums verified, including roles.sql."
 
       - name: Start isolated Supabase Postgres container
         shell: bash
@@ -107,58 +107,47 @@ jobs:
           docker logs "$DB_CONTAINER" --tail 100 || true
           exit 40
 
-      - name: Restore roles, schema, and data
+      - name: Restore application schema and data
         shell: bash
         run: |
           set -euo pipefail
 
-          # Provision only missing Supabase platform-managed roles referenced by
-          # roles.sql. These are local verification placeholders (NOLOGIN) and
-          # never leave this ephemeral container.
-          grep -oE '"supabase_[A-Za-z0-9_]+"' "$RESTORE_DIR/plain/roles.sql" \
-            | tr -d '"' | sort -u > "$RESTORE_DIR/supabase-managed-roles.txt" || true
-          while IFS= read -r role; do
-            [[ -n "$role" ]] || continue
-            EXISTS="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select 1 from pg_roles where rolname='${role}'" | tr -d '[:space:]')"
-            if [[ "$EXISTS" != "1" ]]; then
-              echo "Provisioning local placeholder for managed role: $role"
-              docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
-                -c "CREATE ROLE \"${role}\" NOLOGIN;"
-            fi
-          done < "$RESTORE_DIR/supabase-managed-roles.txt"
+          # roles.sql is integrity-verified above, but Supabase platform-managed
+          # roles are control-plane objects and cannot be faithfully replayed in
+          # this standalone image. Do not fabricate or modify reserved roles.
+          echo "roles.sql integrity verified; managed-role replay intentionally skipped in isolated application restore."
 
-          set +e
-          docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres \
-            < "$RESTORE_DIR/plain/roles.sql" \
-            > "$RESTORE_DIR/roles-restore.log" 2>&1
-          ROLE_RC=$?
-          set -e
-
-          if grep -q '^ERROR:' "$RESTORE_DIR/roles-restore.log"; then
-            UNEXPECTED_ROLE_ERRORS="$(grep '^ERROR:' "$RESTORE_DIR/roles-restore.log" | grep -vE 'reserved role, only superusers can modify it' || true)"
-            if [[ -n "$UNEXPECTED_ROLE_ERRORS" ]]; then
-              echo "::error::Unexpected role restore error(s):"
-              printf '%s\n' "$UNEXPECTED_ROLE_ERRORS"
-              exit 41
-            fi
-            echo "Expected Supabase-managed reserved-role protections were observed and tolerated for isolated verification."
-          elif [[ "$ROLE_RC" -ne 0 ]]; then
-            echo "::error::roles.sql exited non-zero without a recognized managed-role error."
-            tail -100 "$RESTORE_DIR/roles-restore.log" || true
-            exit 42
-          else
-            echo "roles.sql replay completed without errors."
-          fi
-
-          # Production Supabase has platform-owned schemas that are not always
-          # pre-created in the standalone verification image. Create only the
-          # known platform schema required by this dump; application schemas are
-          # still restored strictly from schema.sql.
+          # Production Supabase includes platform-owned schemas not always
+          # pre-created in the standalone image. vault is required by this dump.
           docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
             -c 'CREATE SCHEMA IF NOT EXISTS vault AUTHORIZATION postgres;'
 
-          docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
-            < "$RESTORE_DIR/plain/schema.sql"
+          # Replay schema without ON_ERROR_STOP so we can classify platform-role
+          # mismatches. Only missing supabase_* role errors are tolerated.
+          set +e
+          docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres \
+            < "$RESTORE_DIR/plain/schema.sql" \
+            > "$RESTORE_DIR/schema-restore.log" 2>&1
+          SCHEMA_RC=$?
+          set -e
+
+          if grep -q '^ERROR:' "$RESTORE_DIR/schema-restore.log"; then
+            UNEXPECTED_SCHEMA_ERRORS="$(grep '^ERROR:' "$RESTORE_DIR/schema-restore.log" | grep -vE 'role "supabase_[A-Za-z0-9_]+" does not exist|reserved role, only superusers can modify it' || true)"
+            if [[ -n "$UNEXPECTED_SCHEMA_ERRORS" ]]; then
+              echo "::error::Unexpected schema restore error(s):"
+              printf '%s\n' "$UNEXPECTED_SCHEMA_ERRORS"
+              exit 43
+            fi
+            echo "Only expected Supabase managed-role mismatches were observed during schema replay."
+          elif [[ "$SCHEMA_RC" -ne 0 ]]; then
+            echo "::error::schema.sql exited non-zero without a classified platform-role error."
+            tail -100 "$RESTORE_DIR/schema-restore.log" || true
+            exit 44
+          else
+            echo "schema.sql replay completed without errors."
+          fi
+
+          # Data restore remains strict/fail-closed.
           {
             echo 'SET session_replication_role = replica;'
             cat "$RESTORE_DIR/plain/data.sql"
@@ -181,7 +170,8 @@ jobs:
             echo "::error::Key operational table pm_observability_incidents is missing after restore."
             exit 51
           fi
-          echo "RESTORE_VERIFIED: isolated restore completed with expected schema evidence."
+          echo "APPLICATION_RESTORE_VERIFIED: encrypted backup restored application schema/data with expected public schema evidence."
+          echo "NOTE: Supabase control-plane managed roles are integrity-checked in roles.sql but are not recreated by this isolated lane."
 
       - name: Cleanup plaintext and isolated database
         if: always()
