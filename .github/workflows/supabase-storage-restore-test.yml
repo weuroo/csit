@@ -1,0 +1,116 @@
+name: Supabase Storage Restore Test (Isolated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: Successful Supabase Storage Backup workflow run ID
+        required: true
+      expected_bucket:
+        description: Expected Storage bucket
+        required: true
+        default: pm-line-evidence
+      minimum_object_count:
+        description: Minimum expected snapshot objects
+        required: true
+        default: '714'
+      minimum_total_bytes:
+        description: Minimum expected snapshot bytes
+        required: true
+        default: '770625696'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify-storage-restore:
+    name: Isolated encrypted Storage restore verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Safety gate
+        shell: bash
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          [[ -n "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]] || { echo '::error::Missing BACKUP_ENCRYPTION_PASSPHRASE'; exit 20; }
+          [[ "${{ inputs.expected_bucket }}" == "pm-line-evidence" ]] || { echo '::error::Bucket outside approved restore-test scope'; exit 21; }
+          [[ "${{ inputs.artifact_run_id }}" =~ ^[0-9]+$ ]] || { echo '::error::Invalid run ID'; exit 22; }
+
+      - name: Download encrypted artifact from selected run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.artifact_run_id }}
+          BUCKET: ${{ inputs.expected_bucket }}
+        run: |
+          set -euo pipefail
+          mkdir -p restore-artifact
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "supabase-storage-${BUCKET}-${RUN_ID}" --dir restore-artifact
+          test -f "restore-artifact/storage-${BUCKET}.tar.gz.gpg"
+          test -f "restore-artifact/ARTIFACT_SHA256SUMS"
+
+      - name: Verify encrypted artifact checksum
+        shell: bash
+        env:
+          BUCKET: ${{ inputs.expected_bucket }}
+        run: |
+          set -euo pipefail
+          cd restore-artifact
+          sha256sum -c ARTIFACT_SHA256SUMS
+
+      - name: Decrypt and verify full snapshot offline
+        shell: bash
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+          BUCKET: ${{ inputs.expected_bucket }}
+          MIN_COUNT: ${{ inputs.minimum_object_count }}
+          MIN_BYTES: ${{ inputs.minimum_total_bytes }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p restore-plain
+          printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --decrypt --output restore-plain/storage.tar.gz "restore-artifact/storage-${BUCKET}.tar.gz.gpg"
+          mkdir -p restore-plain/extracted
+          tar -xzf restore-plain/storage.tar.gz -C restore-plain/extracted
+          cd restore-plain/extracted
+          sha256sum -c STORAGE_MANIFEST.sha256
+          node <<'NODE'
+          const fs = require('fs')
+          const crypto = require('crypto')
+          const path = require('path')
+          const m = JSON.parse(fs.readFileSync('STORAGE_MANIFEST.json','utf8'))
+          const bucket = process.env.BUCKET
+          const minCount = Number(process.env.MIN_COUNT)
+          const minBytes = Number(process.env.MIN_BYTES)
+          if (m.format !== 'pm-agency-supabase-storage-backup-v2') throw new Error(`Unexpected format: ${m.format}`)
+          if (m.bucket !== bucket) throw new Error(`Bucket mismatch: ${m.bucket}`)
+          if (!Array.isArray(m.objects)) throw new Error('Manifest objects missing')
+          if (m.objects.length !== Number(m.snapshot_object_count)) throw new Error('Manifest count mismatch')
+          if (m.objects.length < minCount) throw new Error(`Snapshot object count regressed: ${m.objects.length} < ${minCount}`)
+          let bytes = 0
+          for (let i=0; i<m.objects.length; i++) {
+            const o = m.objects[i]
+            if (!o.blob || !o.sha256 || !Number.isFinite(Number(o.size))) throw new Error(`Malformed manifest item ${i}`)
+            const p = path.resolve(o.blob)
+            if (!fs.existsSync(p)) throw new Error(`Missing blob for manifest item ${i}`)
+            const b = fs.readFileSync(p)
+            if (b.length !== Number(o.size)) throw new Error(`Size mismatch at manifest item ${i}`)
+            const sha = crypto.createHash('sha256').update(b).digest('hex')
+            if (sha !== o.sha256) throw new Error(`SHA-256 mismatch at manifest item ${i}`)
+            bytes += b.length
+          }
+          if (bytes !== Number(m.snapshot_total_bytes)) throw new Error(`Snapshot byte total mismatch: ${bytes} != ${m.snapshot_total_bytes}`)
+          if (bytes < minBytes) throw new Error(`Snapshot bytes regressed: ${bytes} < ${minBytes}`)
+          console.log(`Storage restore verified offline: objects=${m.objects.length}, bytes=${bytes}, bucket=${bucket}`)
+          NODE
+
+      - name: Destroy decrypted test material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf restore-plain
+          test ! -e restore-plain
+          echo 'Decrypted restore-test material removed.'
