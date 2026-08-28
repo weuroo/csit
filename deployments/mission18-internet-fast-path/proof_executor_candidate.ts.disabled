@@ -5,42 +5,100 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import https from "node:https";
+import net from "node:net";
 
 const sb=createClient(Deno.env.get('SUPABASE_URL')!,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const TARGET='https://example.com/';
 const MAX_TOTAL_MS=10_000, MAX_BYTES=1_048_576, MAX_REDIRECTS=3;
 const H={'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer'};
 const reply=(s:number,d:unknown)=>new Response(JSON.stringify(d),{status:s,headers:H});
-const family=(ip:string)=>ip.includes(':')?6:4;
+const family=(ip:string)=>net.isIP(ip);
+const canonicalIp=(ip:string)=>String(ip||'').toLowerCase().replace(/^::ffff:/,'');
 const enc=new TextEncoder();
 const equal=(a:string,b:string)=>{const aa=enc.encode(a),bb=enc.encode(b);if(aa.length!==bb.length)return false;let x=0;for(let i=0;i<aa.length;i++)x|=aa[i]^bb[i];return x===0};
+
+type DnsEvidence={host:string;validated_ips:string[];selected_ip:string;selected_family:number};
+type LegEvidence={leg_index:number;url:string;host:string;dns_answer_set:string[];selected_ip:string;selected_family:number;remote_address:string;remote_family:string;remote_address_matches_selected:boolean;status:number;bytes:number;location?:string};
 
 async function publicDnsSet(host:string){
   const all:string[]=[];
   try{all.push(...await Deno.resolveDns(host,'A'))}catch{}
   try{all.push(...await Deno.resolveDns(host,'AAAA'))}catch{}
-  const ips=[...new Set(all)].sort();
+  const ips=[...new Set(all.map(canonicalIp))].filter(ip=>family(ip)!==0).sort();
   if(!ips.length) throw new Error('DNS_NO_ANSWERS');
   const {data,error}=await sb.rpc('pm_internet_resolved_ip_guard_shadow_v1',{p_ips:ips});
   if(error||!data?.allowed) throw new Error('DNS_IP_GUARD_BLOCKED');
   return ips;
 }
-async function stablePublicDns(host:string){const a=await publicDnsSet(host),b=await publicDnsSet(host);if(JSON.stringify(a)!==JSON.stringify(b))throw new Error('DNS_REBINDING_SET_CHANGED');return b}
-function preferredValidatedIp(ips:string[]){return ips.find(ip=>family(ip)===4)||ips[0]}
-function pinnedGet(url:URL,ip:string,remainingMs:number,onTcpConnect:()=>void){return new Promise<{status:number,location?:string,bytes:number}>((resolve,reject)=>{if(remainingMs<=0)return reject(new Error('TIMEOUT_FULL_PROOF'));let total=0,settled=false;const req=https.request({protocol:'https:',hostname:url.hostname,port:443,path:url.pathname+url.search,method:'GET',servername:url.hostname,rejectUnauthorized:true,headers:{host:url.host,accept:'text/html,application/json;q=0.9,*/*;q=0.1','user-agent':'PM-Agency-Internet-Proof/1.0'},lookup:(_h:any,_o:any,cb:any)=>cb(null,ip,family(ip))},res=>{res.on('data',(c:Buffer)=>{total+=c.length;if(total>MAX_BYTES)req.destroy(new Error('RESPONSE_TOO_LARGE'))});res.on('end',()=>{if(!settled){settled=true;clearTimeout(timer);const loc=Array.isArray(res.headers.location)?res.headers.location[0]:res.headers.location;resolve({status:res.statusCode||0,location:loc,bytes:total})}});res.on('error',e=>{if(!settled){settled=true;clearTimeout(timer);reject(e)}})});req.on('socket',(socket:any)=>{socket.once('connect',()=>{try{onTcpConnect()}catch{}})});const timer=setTimeout(()=>{if(!settled){settled=true;req.destroy(new Error('TIMEOUT_FULL_PROOF'));reject(new Error('TIMEOUT_FULL_PROOF'))}},remainingMs);req.on('error',e=>{if(!settled){settled=true;clearTimeout(timer);reject(e)}});req.end()})}
+async function stablePublicDns(host:string):Promise<DnsEvidence>{
+  const a=await publicDnsSet(host),b=await publicDnsSet(host);
+  if(JSON.stringify(a)!==JSON.stringify(b))throw new Error('DNS_REBINDING_SET_CHANGED');
+  const selected=b.find(ip=>family(ip)===4)||b[0];
+  if(!selected||family(selected)===0)throw new Error('DNS_SELECTED_IP_INVALID');
+  return {host,validated_ips:b,selected_ip:selected,selected_family:family(selected)};
+}
+
+function pinnedGet(url:URL,dns:DnsEvidence,remainingMs:number,legIndex:number){
+  return new Promise<LegEvidence>((resolve,reject)=>{
+    if(remainingMs<=0)return reject(new Error('TIMEOUT_FULL_PROOF'));
+    let total=0,settled=false,remoteAddress='',remoteFamily='';
+    const req=https.request({
+      protocol:'https:',hostname:url.hostname,port:443,path:url.pathname+url.search,method:'GET',
+      servername:url.hostname,rejectUnauthorized:true,
+      headers:{host:url.host,accept:'text/html,application/json;q=0.9,*/*;q=0.1','user-agent':'PM-Agency-Internet-Proof/1.0'},
+      lookup:(_h:any,_o:any,cb:any)=>cb(null,dns.selected_ip,dns.selected_family)
+    },res=>{
+      res.on('data',(c:Buffer)=>{total+=c.length;if(total>MAX_BYTES)req.destroy(new Error('RESPONSE_TOO_LARGE'))});
+      res.on('end',()=>{
+        if(settled)return;
+        const normalizedRemote=canonicalIp(remoteAddress),normalizedSelected=canonicalIp(dns.selected_ip);
+        if(!normalizedRemote||normalizedRemote!==normalizedSelected){settled=true;clearTimeout(timer);return reject(new Error('PINNED_IP_REMOTE_MISMATCH'))}
+        settled=true;clearTimeout(timer);
+        const loc=Array.isArray(res.headers.location)?res.headers.location[0]:res.headers.location;
+        resolve({leg_index:legIndex,url:url.toString(),host:url.hostname,dns_answer_set:[...dns.validated_ips],selected_ip:dns.selected_ip,selected_family:dns.selected_family,remote_address:normalizedRemote,remote_family:remoteFamily,remote_address_matches_selected:true,status:res.statusCode||0,location:loc,bytes:total});
+      });
+      res.on('error',e=>{if(!settled){settled=true;clearTimeout(timer);reject(e)}})
+    });
+    req.on('socket',(socket:any)=>{
+      socket.once('connect',()=>{
+        remoteAddress=String(socket.remoteAddress||'');
+        remoteFamily=String(socket.remoteFamily||'');
+        const normalizedRemote=canonicalIp(remoteAddress),normalizedSelected=canonicalIp(dns.selected_ip);
+        if(!normalizedRemote||normalizedRemote!==normalizedSelected)req.destroy(new Error('PINNED_IP_REMOTE_MISMATCH'));
+      });
+    });
+    const timer=setTimeout(()=>{if(!settled){settled=true;req.destroy(new Error('TIMEOUT_FULL_PROOF'));reject(new Error('TIMEOUT_FULL_PROOF'))}},remainingMs);
+    req.on('error',e=>{if(!settled){settled=true;clearTimeout(timer);reject(e)}});
+    req.end();
+  })
+}
 
 async function assertProofWindow(commandId:string){
   const {error:authorityError}=await sb.rpc('pm_internet_assert_verified_transport_command_v1',{p_command_id:commandId});
   if(authorityError)throw new Error('VERIFIED_OWNER_COMMAND_AND_CONSUMED_NONCE_REQUIRED');
   const {data:ctl,error:ce}=await sb.from('pm_owner_internet_gateway_control_shadow_v1').select('mode,owner_lockdown_active,production_network_enabled,evidence').eq('control_key','CONTROLLED_INTERNET_GATEWAY').single();
-  if(ce||!ctl)throw new Error('GATEWAY_CONTROL_MISSING');if(ctl.owner_lockdown_active)throw new Error('OWNER_LOCKDOWN_ACTIVE');if(ctl.production_network_enabled)throw new Error('GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_DISABLED');if(ctl.mode!=='TRANSPORT_PROOF_SINGLE_REQUEST')throw new Error('PROOF_MODE_REQUIRED');if(String(ctl.evidence?.source_command_id||'')!==commandId)throw new Error('COMMAND_BINDING_MISMATCH');const exp=Date.parse(String(ctl.evidence?.unlock_expires_at||''));if(!Number.isFinite(exp)||Date.now()>=exp)throw new Error('PROOF_WINDOW_EXPIRED');
-  const {data:lane,error:le}=await sb.from('pm_internet_transport_proof_lane_v1').select('enabled,fixed_target_url,max_requests,network_request_count,proof_completed').eq('lane_key','CONTROLLED_INTERNET_TRANSPORT_PROOF').single();if(le||!lane||!lane.enabled||lane.fixed_target_url!==TARGET||lane.max_requests!==1||lane.proof_completed)throw new Error('PROOF_LANE_NOT_READY');
+  if(ce||!ctl)throw new Error('GATEWAY_CONTROL_MISSING');
+  if(ctl.owner_lockdown_active)throw new Error('OWNER_LOCKDOWN_ACTIVE');
+  if(ctl.production_network_enabled)throw new Error('GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_DISABLED');
+  if(ctl.mode!=='TRANSPORT_PROOF_SINGLE_REQUEST')throw new Error('PROOF_MODE_REQUIRED');
+  if(String(ctl.evidence?.source_command_id||'')!==commandId)throw new Error('COMMAND_BINDING_MISMATCH');
+  const exp=Date.parse(String(ctl.evidence?.unlock_expires_at||''));
+  if(!Number.isFinite(exp)||Date.now()>=exp)throw new Error('PROOF_WINDOW_EXPIRED');
+  const {data:lane,error:le}=await sb.from('pm_internet_transport_proof_lane_v1').select('enabled,fixed_target_url,max_requests,network_request_count,proof_completed').eq('lane_key','CONTROLLED_INTERNET_TRANSPORT_PROOF').single();
+  if(le||!lane||!lane.enabled||lane.fixed_target_url!==TARGET||lane.max_requests!==1||lane.proof_completed)throw new Error('PROOF_LANE_NOT_READY');
   const nowIso=new Date().toISOString();
   const {data:grants,error:ge}=await sb.from('pm_agent_capability_grants_v1').select('grant_id,source_command_id,valid_from,expires_at,allowed_actions,allowed_resources,risk_ceiling,can_delegate').eq('grantee_agent_key','PAOJAI_OPERATIONS_AI').eq('status','ACTIVE').contains('allowed_actions',['PUBLIC_READ']).gt('expires_at',nowIso);
   if(ge||!Array.isArray(grants)||grants.length!==1)throw new Error('EXACTLY_ONE_ACTIVE_PUBLIC_READ_GRANT_REQUIRED');
-  const grant=grants[0];if(String(grant.source_command_id||'')!==commandId)throw new Error('COMMAND_BOUND_GRANT_REQUIRED');if(grant.risk_ceiling!=='LOW')throw new Error('GRANT_RISK_CEILING_MUST_BE_LOW');if(grant.can_delegate)throw new Error('DELEGATION_FORBIDDEN');if(!Array.isArray(grant.allowed_actions)||grant.allowed_actions.length!==1||grant.allowed_actions[0]!=='PUBLIC_READ')throw new Error('EXACT_ACTION_BINDING_REQUIRED');
-  const vf=Date.parse(String(grant.valid_from||'')),gx=Date.parse(String(grant.expires_at||''));if(!Number.isFinite(vf)||!Number.isFinite(gx)||vf>Date.now()||gx<=Date.now()||gx-vf>600_000||gx>exp)throw new Error('GRANT_TTL_EXCEEDS_BOUND');
-  const r=grant.allowed_resources||{};if(String(r.fixed_target_url||'')!==TARGET||Number(r.max_requests||0)!==1||r.scheme!=='https'||r.public_internet_only!==true||r.credentials!==false||r.downloads!==false||r.code_execution!==false||r.external_side_effects!==false||r.protected_data_egress!==false||r.cross_client_context!==false)throw new Error('GRANT_RESOURCE_SCOPE_NOT_EXACT');return {ctl,lane,grant};
+  const grant=grants[0];
+  if(String(grant.source_command_id||'')!==commandId)throw new Error('COMMAND_BOUND_GRANT_REQUIRED');
+  if(grant.risk_ceiling!=='LOW')throw new Error('GRANT_RISK_CEILING_MUST_BE_LOW');
+  if(grant.can_delegate)throw new Error('DELEGATION_FORBIDDEN');
+  if(!Array.isArray(grant.allowed_actions)||grant.allowed_actions.length!==1||grant.allowed_actions[0]!=='PUBLIC_READ')throw new Error('EXACT_ACTION_BINDING_REQUIRED');
+  const vf=Date.parse(String(grant.valid_from||'')),gx=Date.parse(String(grant.expires_at||''));
+  if(!Number.isFinite(vf)||!Number.isFinite(gx)||vf>Date.now()||gx<=Date.now()||gx-vf>600_000||gx>exp)throw new Error('GRANT_TTL_EXCEEDS_BOUND');
+  const r=grant.allowed_resources||{};
+  if(String(r.fixed_target_url||'')!==TARGET||Number(r.max_requests||0)!==1||r.scheme!=='https'||r.public_internet_only!==true||r.credentials!==false||r.downloads!==false||r.code_execution!==false||r.external_side_effects!==false||r.protected_data_egress!==false||r.cross_client_context!==false)throw new Error('GRANT_RESOURCE_SCOPE_NOT_EXACT');
+  return {ctl,lane,grant};
 }
 async function finalize(token:string,outcome:string,evidence:Record<string,unknown>){const {data,error}=await sb.rpc('pm_internet_transport_proof_finalize_request_v1',{p_request_token:token,p_outcome:outcome,p_evidence:evidence});if(error)throw error;return data}
 async function emergencyRelock(commandId:string,reason:string){const {data,error}=await sb.rpc('pm_internet_transport_proof_emergency_relock_v1',{p_command_id:commandId,p_reason:reason.slice(0,500)});if(error)throw error;if(!data?.cleanup_verified)throw new Error('EMERGENCY_RELOCK_NOT_VERIFIED');return data}
@@ -51,14 +109,67 @@ Deno.serve(async(req:Request)=>{
   const supplied=req.headers.get('x-pm-proof-executor-token')||'';
   if(expected.length<32||!equal(supplied,expected))return reply(403,{ok:false,error:'PROOF_EXECUTOR_OPERATOR_AUTH_REQUIRED',networkRequestPerformed:false});
   let body:any={};try{body=await req.json()}catch{return reply(400,{ok:false,error:'INVALID_JSON',networkRequestPerformed:false})}
-  const commandId=String(body.commandId||''),requestToken=String(body.requestToken||'');if(!commandId||!requestToken)return reply(400,{ok:false,error:'COMMAND_AND_REQUEST_TOKEN_REQUIRED',networkRequestPerformed:false});if('url'in body||'target'in body)return reply(400,{ok:false,error:'CALLER_SELECTED_TARGET_FORBIDDEN',networkRequestPerformed:false});
+  const commandId=String(body.commandId||''),requestToken=String(body.requestToken||'');
+  if(!commandId||!requestToken)return reply(400,{ok:false,error:'COMMAND_AND_REQUEST_TOKEN_REQUIRED',networkRequestPerformed:false});
+  if('url'in body||'target'in body)return reply(400,{ok:false,error:'CALLER_SELECTED_TARGET_FORBIDDEN',networkRequestPerformed:false});
   try{await assertProofWindow(commandId)}catch(e){return reply(423,{ok:false,error:String((e as Error).message||e),networkRequestPerformed:false})}
-  const {data:reservation,error:re}=await sb.rpc('pm_internet_transport_proof_reserve_request_v1',{p_request_token:requestToken,p_command_id:commandId});if(re||!reservation?.ok||reservation?.duplicate===true||reservation?.network_execution_allowed!==true)return reply(423,{ok:false,error:reservation?.reason||'PROOF_REQUEST_RESERVATION_FAILED_OR_REPLAYED',networkRequestPerformed:false,slotRemainsConsumed:!!reservation?.slot_consumed,retryRequiresFreshReviewAndOwnerApproval:!!reservation?.slot_consumed});
-  const started=Date.now();let dnsVerified=false,redirectPolicyVerified=true,redirectObserved=false,redirectConnectTimeVerified=false,networkPerformed=false;let current=new URL(TARGET),redirects=0;
-  try{while(true){await assertProofWindow(commandId);const ips=await stablePublicDns(current.hostname);dnsVerified=true;const chosenIp=preferredValidatedIp(ips);await assertProofWindow(commandId);const remaining=MAX_TOTAL_MS-(Date.now()-started),isRedirectLeg=redirects>0;const result=await pinnedGet(current,chosenIp,remaining,()=>{networkPerformed=true;if(isRedirectLeg)redirectConnectTimeVerified=true});if(result.status>=300&&result.status<400){redirectObserved=true;if(!result.location)throw new Error('REDIRECT_WITHOUT_LOCATION');if(redirects>=MAX_REDIRECTS)throw new Error('TOO_MANY_REDIRECTS');const next=new URL(result.location,current);if(next.protocol!=='https:'||next.hostname.toLowerCase()!==current.hostname.toLowerCase())throw new Error('CROSS_HOST_OR_NON_HTTPS_REDIRECT_BLOCKED');await assertProofWindow(commandId);await stablePublicDns(next.hostname);current=next;redirects++;continue}if(result.status<200||result.status>=300)throw new Error('PROOF_FINAL_STATUS_NOT_2XX');const elapsedMs=Date.now()-started;if(elapsedMs>MAX_TOTAL_MS)throw new Error('TIMEOUT_FULL_PROOF');const redirectSatisfied=!redirectObserved||redirectConnectTimeVerified;const evidence={dns_connect_time_verified:dnsVerified,redirect_policy_verified:redirectPolicyVerified,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_connect_time_verified:redirectConnectTimeVerified,redirect_revalidation_satisfied:redirectSatisfied,network_request_performed:networkPerformed,status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,selected_ip_family:family(chosenIp),general_production_network_authorized:false};
-    let fin:any;try{fin=await finalize(requestToken,'SUCCESS',evidence)}catch(fe){const relock=await emergencyRelock(commandId,'FINALIZE_SUCCESS_FAILED:'+String((fe as Error).message||fe));return reply(502,{ok:false,error:'FINALIZE_FAILED_EMERGENCY_RELOCKED',networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,cleanup_verified:!!relock?.cleanup_verified,retryRequiresFreshReviewAndOwnerApproval:true})}
-    return reply(200,{ok:true,status:result.status,bytes:result.bytes,redirects,elapsedMs,networkRequestPerformed:networkPerformed,redirectObserved,proofCompleted:!!fin?.proof_completed})}}
-  catch(e){const redirectSatisfied=!redirectObserved||redirectConnectTimeVerified;const evidence={dns_connect_time_verified:dnsVerified,redirect_policy_verified:redirectPolicyVerified,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_connect_time_verified:redirectConnectTimeVerified,redirect_revalidation_satisfied:redirectSatisfied,network_request_performed:networkPerformed,error:String((e as Error).message||e),redirects,elapsed_ms:Date.now()-started,fixed_target_url:TARGET,general_production_network_authorized:false};let cleanupVerified=false;try{await finalize(requestToken,'FAILED',evidence);cleanupVerified=true}catch(fe){try{const relock=await emergencyRelock(commandId,'FINALIZE_FAILED_AFTER_PROOF_ERROR:'+String((fe as Error).message||fe));cleanupVerified=!!relock?.cleanup_verified}catch{cleanupVerified=false}}return reply(502,{ok:false,error:String((e as Error).message||e),networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true})}
+  const {data:reservation,error:re}=await sb.rpc('pm_internet_transport_proof_reserve_request_v1',{p_request_token:requestToken,p_command_id:commandId});
+  if(re||!reservation?.ok||reservation?.duplicate===true||reservation?.network_execution_allowed!==true)return reply(423,{ok:false,error:reservation?.reason||'PROOF_REQUEST_RESERVATION_FAILED_OR_REPLAYED',networkRequestPerformed:false,slotRemainsConsumed:!!reservation?.slot_consumed,retryRequiresFreshReviewAndOwnerApproval:!!reservation?.slot_consumed});
+
+  const started=Date.now();
+  let redirectObserved=false,networkPerformed=false,current=new URL(TARGET),redirects=0;
+  const transportLegs:LegEvidence[]=[];
+  try{
+    while(true){
+      await assertProofWindow(commandId);
+      const dns=await stablePublicDns(current.hostname);
+      await assertProofWindow(commandId);
+      const remaining=MAX_TOTAL_MS-(Date.now()-started);
+      // Reservation has already consumed the only slot. The next call is the sole permitted network attempt.
+      networkPerformed=true;
+      const result=await pinnedGet(current,dns,remaining,transportLegs.length);
+      transportLegs.push(result);
+      if(result.status>=300&&result.status<400){
+        redirectObserved=true;
+        if(!result.location)throw new Error('REDIRECT_WITHOUT_LOCATION');
+        if(redirects>=MAX_REDIRECTS)throw new Error('TOO_MANY_REDIRECTS');
+        const next=new URL(result.location,current);
+        if(next.protocol!=='https:'||next.hostname.toLowerCase()!==current.hostname.toLowerCase())throw new Error('CROSS_HOST_OR_NON_HTTPS_REDIRECT_BLOCKED');
+        // Redirect DNS is not inherited from the prior leg. The next loop performs fresh two-read DNS validation,
+        // chooses a validated IP, and verifies the actual connected remoteAddress against that exact IP.
+        current=next;redirects++;continue;
+      }
+      if(result.status<200||result.status>=300)throw new Error('PROOF_FINAL_STATUS_NOT_2XX');
+      const elapsedMs=Date.now()-started;
+      if(elapsedMs>MAX_TOTAL_MS)throw new Error('TIMEOUT_FULL_PROOF');
+      const allPinned=transportLegs.length>0&&transportLegs.every(x=>x.remote_address_matches_selected&&canonicalIp(x.remote_address)===canonicalIp(x.selected_ip));
+      const redirectSatisfied=!redirectObserved||transportLegs.length===redirects+1;
+      if(!allPinned)throw new Error('PINNED_IP_RUNTIME_EVIDENCE_INCOMPLETE');
+      if(!redirectSatisfied)throw new Error('REDIRECT_RUNTIME_EVIDENCE_INCOMPLETE');
+      const evidence={
+        dns_connect_time_verified:allPinned,
+        dns_runtime_evidence_passed:allPinned,
+        redirect_policy_verified:true,
+        redirect_observed:redirectObserved,
+        redirect_revalidation_required:redirectObserved,
+        redirect_revalidation_satisfied:redirectSatisfied,
+        network_request_performed:networkPerformed,
+        status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,
+        transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,
+        transport_legs:transportLegs,
+        general_production_network_authorized:false
+      };
+      let fin:any;
+      try{fin=await finalize(requestToken,'SUCCESS',evidence)}catch(fe){const relock=await emergencyRelock(commandId,'FINALIZE_SUCCESS_FAILED:'+String((fe as Error).message||fe));return reply(502,{ok:false,error:'FINALIZE_FAILED_EMERGENCY_RELOCKED',networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,cleanup_verified:!!relock?.cleanup_verified,retryRequiresFreshReviewAndOwnerApproval:true})}
+      return reply(200,{ok:true,status:result.status,bytes:result.bytes,redirects,elapsedMs,networkRequestPerformed:networkPerformed,redirectObserved,proofCompleted:!!fin?.proof_completed});
+    }
+  }catch(e){
+    const allObservedPinned=transportLegs.length>0&&transportLegs.every(x=>x.remote_address_matches_selected&&canonicalIp(x.remote_address)===canonicalIp(x.selected_ip));
+    const evidence={dns_connect_time_verified:allObservedPinned,dns_runtime_evidence_passed:allObservedPinned,redirect_policy_verified:true,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_revalidation_satisfied:false,network_request_performed:networkPerformed,error:String((e as Error).message||e),redirects,elapsed_ms:Date.now()-started,fixed_target_url:TARGET,transport_legs:transportLegs,general_production_network_authorized:false};
+    let cleanupVerified=false;
+    try{await finalize(requestToken,'FAILED',evidence);cleanupVerified=true}catch(fe){try{const relock=await emergencyRelock(commandId,'FINALIZE_FAILED_AFTER_PROOF_ERROR:'+String((fe as Error).message||fe));cleanupVerified=!!relock?.cleanup_verified}catch{cleanupVerified=false}}
+    return reply(502,{ok:false,error:String((e as Error).message||e),networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
+  }
 });
 
 /* REVIEW NOTES
@@ -68,8 +179,9 @@ Deno.serve(async(req:Request)=>{
 - Invocation requires fresh >=32-byte PM_PROOF_EXECUTOR_TOKEN in addition to verify_jwt; token is operator/service-only, never browser/client-visible, and is removed after the one proof attempt.
 - Re-checks persisted VERIFIED Owner command + consumed nonce/gateway audit before each material transport leg; caller assertions are never authority.
 - Requires exactly one active PAOJAI PUBLIC_READ grant globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, not beyond the proof window, with exact safe resource flags.
-- Same-host HTTPS redirects are allowed up to 3; zero redirects are valid and recorded honestly.
-- network_request_performed becomes true only after an actual TCP connect event.
+- For every network leg, persists the validated DNS answer set, selected pinned IP/family and actual socket remoteAddress/remoteFamily; transport fails closed unless actual remoteAddress equals the exact selected IP.
+- Same-host HTTPS redirects are allowed up to 3 and each followed leg repeats fresh two-read DNS stability, selected-IP binding and actual remote-address verification; zero redirects are valid and recorded honestly.
+- network_request_performed becomes true immediately before the sole post-reservation transport call; any transport failure still consumes the slot.
 - Total proof timeout, including redirects, is <=10 seconds; response limit is 1 MiB.
 - Reservation replay is fail-closed before DNS/network: duplicate=true or network_execution_allowed!=true aborts transport.
 - Normal finalize is authoritative cleanup; if finalize fails after reservation, the executor invokes independent pm_internet_transport_proof_emergency_relock_v1 and requires cleanup_verified=true.
