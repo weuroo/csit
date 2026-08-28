@@ -63,13 +63,13 @@ jobs:
           rm -rf /tmp/csit-restore-test.git
           git clone --mirror "$BACKUP_DIR/plain/csit-all-refs.bundle" /tmp/csit-restore-test.git
           git --git-dir=/tmp/csit-restore-test.git fsck --full --no-dangling
-          BUNDLE_HEAD_COUNT="$(wc -l < "$BACKUP_DIR/plain/BUNDLE_HEADS.txt" | tr -d ' ')"
+          BUNDLE_REF_COUNT="$(awk '$2 ~ /^refs\// {count++} END {print count+0}' "$BACKUP_DIR/plain/BUNDLE_HEADS.txt")"
           RESTORED_REF_COUNT="$(git --git-dir=/tmp/csit-restore-test.git for-each-ref --format='%(refname)' | wc -l | tr -d ' ')"
-          if [[ "$RESTORED_REF_COUNT" -lt "$BUNDLE_HEAD_COUNT" ]]; then
-            echo "::error::Restored ref count is lower than bundle head count: restored=$RESTORED_REF_COUNT bundle=$BUNDLE_HEAD_COUNT"
+          if [[ "$RESTORED_REF_COUNT" -lt "$BUNDLE_REF_COUNT" ]]; then
+            echo "::error::Restored ref count is lower than real bundle ref count: restored=$RESTORED_REF_COUNT bundle_refs=$BUNDLE_REF_COUNT"
             exit 30
           fi
-          echo "Isolated clone verification passed: bundle_heads=$BUNDLE_HEAD_COUNT restored_refs=$RESTORED_REF_COUNT"
+          echo "Isolated clone verification passed: bundle_refs=$BUNDLE_REF_COUNT restored_refs=$RESTORED_REF_COUNT"
 
       - name: Create plaintext checksums
         shell: bash
