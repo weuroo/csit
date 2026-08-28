@@ -32,12 +32,12 @@ jobs:
       - name: Safety gate — required secrets and scope
         shell: bash
         env:
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BACKUP_SECRET_KEY: ${{ secrets.SUPABASE_BACKUP_SECRET_KEY }}
           BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
         run: |
           set -euo pipefail
-          if [[ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
-            echo "::error::Missing SUPABASE_SERVICE_ROLE_KEY. No Storage download was attempted."
+          if [[ -z "${SUPABASE_BACKUP_SECRET_KEY:-}" ]]; then
+            echo "::error::Missing SUPABASE_BACKUP_SECRET_KEY. No Storage download was attempted."
             exit 20
           fi
           if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]]; then
@@ -60,7 +60,7 @@ jobs:
       - name: Download private Storage objects and verify stable listing
         shell: bash
         env:
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BACKUP_SECRET_KEY: ${{ secrets.SUPABASE_BACKUP_SECRET_KEY }}
           BUCKET: ${{ inputs.bucket }}
           EXPECTED_COUNT: ${{ inputs.expected_object_count }}
           EXPECTED_BYTES: ${{ inputs.expected_total_bytes }}
@@ -74,7 +74,7 @@ jobs:
           import crypto from 'node:crypto'
 
           const projectRef = process.env.PROJECT_REF
-          const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+          const key = process.env.SUPABASE_BACKUP_SECRET_KEY
           const bucket = process.env.BUCKET
           const expectedCount = Number(process.env.EXPECTED_COUNT)
           const expectedBytes = Number(process.env.EXPECTED_BYTES)
