@@ -1,5 +1,5 @@
 // PRE-STAGED ONLY. DO NOT ENABLE OR DEPLOY DURING FEATURE FREEZE.
-// Mission #18 promotion guard: DNS is a network side effect and must be counted immediately after atomic reservation.
+// Mission #18 promotion guard: distinguish DNS network side effects from the pinned HTTPS request.
 import fs from 'node:fs';
 
 const p=new URL('./proof_executor_candidate.ts.disabled', import.meta.url);
@@ -8,15 +8,19 @@ const fail=(m)=>{console.error('BLOCK:',m);process.exitCode=1};
 
 const loop=s.indexOf('while(true)');
 const dns=s.indexOf('stablePublicDns(',loop);
-const mark=s.indexOf('networkPerformed=true',loop);
-if(loop<0||dns<0) fail('executor transport loop/DNS call not found');
-if(mark<0||mark>dns) fail('networkPerformed must become true BEFORE first post-reservation DNS resolution; DNS itself is network activity');
+const side=s.indexOf('networkSideEffectPerformed=true',loop);
+const request=s.indexOf('networkRequestPerformed=true',loop);
+const transport=s.indexOf('pinnedGet(',loop);
+if(loop<0||dns<0||transport<0) fail('executor transport loop/DNS/pinned transport call not found');
+if(side<0||side>dns) fail('networkSideEffectPerformed must become true BEFORE first post-reservation DNS resolution');
+if(request<0||request<dns||request>transport) fail('networkRequestPerformed must become true AFTER DNS resolution and BEFORE pinned TLS/HTTPS transport');
 
 const reserve=s.indexOf("pm_internet_transport_proof_reserve_request_v1");
-if(reserve<0||mark<reserve) fail('network accounting marker must occur only after atomic reservation attempt path');
+if(reserve<0||side<reserve||request<reserve) fail('network accounting markers must occur only after atomic reservation path');
 
-if(!s.includes('network_request_performed:networkPerformed')) fail('finalized evidence must persist network_request_performed');
+if(!s.includes('network_side_effect_performed:networkSideEffectPerformed')) fail('finalized evidence must persist network_side_effect_performed');
+if(!s.includes('network_request_performed:networkRequestPerformed')) fail('finalized evidence must persist network_request_performed separately');
 if(!s.includes('retryRequiresFreshReviewAndOwnerApproval:true')) fail('failed proof path must require fresh review/Owner approval');
 if(!s.includes('slotRemainsConsumed:true')) fail('failed post-reservation proof must preserve consumed-slot semantics');
 
-if(!process.exitCode) console.log('PASS: DNS/network side-effect accounting promotion guard');
+if(!process.exitCode) console.log('PASS: DNS side-effect and HTTPS-request accounting promotion guard');
