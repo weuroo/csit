@@ -1,14 +1,12 @@
 -- PRE-STAGED ONLY. DO NOT APPLY DURING ACTIVE FEATURE FREEZE.
 -- Mission #18 exact-payload authority review.
 --
--- Why this exists:
--- crypto-bound WebAuthn evidence + nonce/payload_hash binding is necessary but not sufficient if
--- the Owner gateway does not independently enforce every authority-bearing field of the command.
--- A service-role caller must never be able to reuse an approved payload_hash while changing an
--- unchecked canonical_payload/resource_scope field.
+-- Crypto-bound WebAuthn + nonce/payload_hash binding is necessary but not sufficient if the
+-- gateway does not independently enforce every authority-bearing field. A service-role caller
+-- must never be able to reuse an approved payload_hash while changing an unchecked command field.
 --
--- This readiness function is intentionally read-only. Apply/review only after Stabilization Exit,
--- after pm_owner_command_gateway_v2 is materialized, and before fresh Owner Passkey is requested.
+-- Read-only readiness helper. Review/apply only after Stabilization Exit, after gateway v2 exists,
+-- and before fresh Owner Passkey is requested.
 
 create or replace function public.pm_owner_gateway_exact_payload_binding_readiness_v1()
 returns jsonb
@@ -22,23 +20,23 @@ with f as (
   select
     src <> '' as gateway_v2_present,
     position('p_signature_verified' in src)=0 as no_caller_signature_boolean,
-    position("canonical_payload->>'owner_user_id'=cmd.owner_user_id::text" in src)>0 as owner_bound,
-    position("canonical_payload->>'device_id'=cmd.device_id::text" in src)>0 as device_bound,
-    position("canonical_payload->>'capability_key'='CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'" in src)>0 as capability_bound,
-    position("canonical_payload->>'grantee_agent_key'='PAOJAI_OPERATIONS_AI'" in src)>0 as grantee_bound,
-    position("canonical_payload->'allowed_actions' = '[\"PUBLIC_READ\"]'::jsonb" in src)>0 as exact_allowed_actions_bound,
-    position("coalesce((canonical_payload->>'requested_grant_minutes')::int,0)=10" in src)>0 as exact_grant_minutes_bound,
-    position("coalesce((canonical_payload->>'can_delegate')::boolean,true)=false" in src)>0 as no_delegation_bound,
-    position("canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'" in src)>0 as activation_scope_bound,
-    position("canonical_payload->>'transport_proof_target_url'='https://example.com/'" in src)>0 as target_bound,
-    position("coalesce((canonical_payload->>'transport_proof_max_requests')::int,0)=1" in src)>0 as one_request_bound,
-    position("coalesce((canonical_payload->>'owner_lockdown_release_max_seconds')::int,0)=120" in src)>0 as bounded_unlock_bound,
-    position("coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false" in src)>0 as general_network_false_bound,
-    position("resource_scope->>'capability_key'='CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'" in src)>0 as resource_scope_capability_bound,
-    position("resource_scope->>'grantee_agent_key'='PAOJAI_OPERATIONS_AI'" in src)>0 as resource_scope_grantee_bound,
-    position("resource_scope->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'" in src)>0 as resource_scope_activation_bound,
-    position("resource_scope->>'transport_proof_target_url'='https://example.com/'" in src)>0 as resource_scope_target_bound,
-    position("coalesce((resource_scope->>'transport_proof_max_requests')::int,0)=1" in src)>0 as resource_scope_one_request_bound
+    position($q$canonical_payload->>'owner_user_id'=cmd.owner_user_id::text$q$ in src)>0 as owner_bound,
+    position($q$canonical_payload->>'device_id'=cmd.device_id::text$q$ in src)>0 as device_bound,
+    position($q$canonical_payload->>'capability_key'='CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'$q$ in src)>0 as capability_bound,
+    position($q$canonical_payload->>'grantee_agent_key'='PAOJAI_OPERATIONS_AI'$q$ in src)>0 as grantee_bound,
+    position($q$canonical_payload->'allowed_actions'='["PUBLIC_READ"]'::jsonb$q$ in replace(src,' ',''))>0 as exact_allowed_actions_bound,
+    position($q$coalesce((canonical_payload->>'requested_grant_minutes')::int,0)=10$q$ in replace(src,' ',''))>0 as exact_grant_minutes_bound,
+    position($q$coalesce((canonical_payload->>'can_delegate')::boolean,true)=false$q$ in replace(src,' ',''))>0 as no_delegation_bound,
+    position($q$canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'$q$ in src)>0 as activation_scope_bound,
+    position($q$canonical_payload->>'transport_proof_target_url'='https://example.com/'$q$ in src)>0 as target_bound,
+    position($q$coalesce((canonical_payload->>'transport_proof_max_requests')::int,0)=1$q$ in replace(src,' ',''))>0 as one_request_bound,
+    position($q$coalesce((canonical_payload->>'owner_lockdown_release_max_seconds')::int,0)=120$q$ in replace(src,' ',''))>0 as bounded_unlock_bound,
+    position($q$coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false$q$ in replace(src,' ',''))>0 as general_network_false_bound,
+    position($q$resource_scope->>'capability_key'='CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'$q$ in src)>0 as resource_scope_capability_bound,
+    position($q$resource_scope->>'grantee_agent_key'='PAOJAI_OPERATIONS_AI'$q$ in src)>0 as resource_scope_grantee_bound,
+    position($q$resource_scope->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'$q$ in src)>0 as resource_scope_activation_bound,
+    position($q$resource_scope->>'transport_proof_target_url'='https://example.com/'$q$ in src)>0 as resource_scope_target_bound,
+    position($q$coalesce((resource_scope->>'transport_proof_max_requests')::int,0)=1$q$ in replace(src,' ',''))>0 as resource_scope_one_request_bound
   from f
 )
 select jsonb_build_object(
@@ -79,8 +77,8 @@ revoke all on function public.pm_owner_gateway_exact_payload_binding_readiness_v
 grant execute on function public.pm_owner_gateway_exact_payload_binding_readiness_v1() to service_role;
 
 -- PASS REQUIRED BEFORE OWNER PASSKEY:
--- - gateway v2 independently derives WebAuthn authority (existing crypto-binding readiness passes)
--- - this exact-payload binding readiness passes
--- - command helper independently re-checks the same exact command semantics
+-- - gateway v2 independently derives WebAuthn authority
+-- - exact command payload and resource_scope are fully bound
+-- - command helper independently re-checks the same exact semantics
 -- - no legacy v1 gateway audit is accepted
--- - no grant/unlock/lane/network mutation occurs inside approval endpoint
+-- - approval endpoint has no grant/unlock/lane/network side effects
