@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          cat > /tmp/storage-backup.mjs <<'NODE'
+          cat > storage-backup.mjs <<'NODE'
           import { createClient } from '@supabase/supabase-js'
           import fs from 'node:fs/promises'
           import path from 'node:path'
@@ -179,7 +179,7 @@ jobs:
           await fs.writeFile(path.join(root, 'STORAGE_MANIFEST.sha256'), `${manifestSha}  STORAGE_MANIFEST.json\n`, { mode: 0o600 })
           console.log(`Storage capture verified: objects=${manifest.length}, bytes=${downloadedBytes}, stable listing=yes.`)
           NODE
-          node /tmp/storage-backup.mjs
+          node ./storage-backup.mjs
 
       - name: Encrypt Storage backup bundle
         shell: bash
@@ -193,7 +193,7 @@ jobs:
           printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --output "$STORAGE_BACKUP_DIR/storage-${BUCKET}.tar.gz.gpg" "$STORAGE_BACKUP_DIR/storage-${BUCKET}.tar.gz"
           sha256sum "$STORAGE_BACKUP_DIR/storage-${BUCKET}.tar.gz.gpg" > "$STORAGE_BACKUP_DIR/ARTIFACT_SHA256SUMS"
           rm -rf "$STORAGE_BACKUP_DIR/plain" "$STORAGE_BACKUP_DIR/storage-${BUCKET}.tar.gz"
-          rm -f /tmp/storage-backup.mjs
+          rm -f storage-backup.mjs
 
       - name: Upload encrypted Storage artifact only
         uses: actions/upload-artifact@v4
@@ -212,5 +212,5 @@ jobs:
           set -euo pipefail
           test ! -d "$STORAGE_BACKUP_DIR/plain"
           test ! -f "$STORAGE_BACKUP_DIR/storage-${{ inputs.bucket }}.tar.gz"
-          test ! -f /tmp/storage-backup.mjs
+          test ! -f storage-backup.mjs
           echo "Encrypted Storage backup artifact created; plaintext removed from runner workspace."
