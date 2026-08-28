@@ -113,8 +113,28 @@ Deno.serve(async(req:Request)=>{
   if(!commandId||!requestToken)return reply(400,{ok:false,error:'COMMAND_AND_REQUEST_TOKEN_REQUIRED',networkRequestPerformed:false});
   if('url'in body||'target'in body)return reply(400,{ok:false,error:'CALLER_SELECTED_TARGET_FORBIDDEN',networkRequestPerformed:false});
   try{await assertProofWindow(commandId)}catch(e){return reply(423,{ok:false,error:String((e as Error).message||e),networkRequestPerformed:false})}
-  const {data:reservation,error:re}=await sb.rpc('pm_internet_transport_proof_reserve_request_v1',{p_request_token:requestToken,p_command_id:commandId});
-  if(re||!reservation?.ok||reservation?.duplicate===true||reservation?.network_execution_allowed!==true)return reply(423,{ok:false,error:reservation?.reason||'PROOF_REQUEST_RESERVATION_FAILED_OR_REPLAYED',networkRequestPerformed:false,slotRemainsConsumed:!!reservation?.slot_consumed,retryRequiresFreshReviewAndOwnerApproval:!!reservation?.slot_consumed});
+
+  let reservation:any=null,reservationError:any=null;
+  try{
+    const rr=await sb.rpc('pm_internet_transport_proof_reserve_request_v1',{p_request_token:requestToken,p_command_id:commandId});
+    reservation=rr.data;reservationError=rr.error;
+  }catch(e){reservationError=e}
+
+  // A lost/invalid reservation response is ambiguous: the DB may already have committed the consume.
+  // Fail closed, perform no DNS/network work, authority-reduce immediately, and require fresh Owner approval.
+  if(reservationError||!reservation||typeof reservation.ok!=='boolean'){
+    let cleanupVerified=false;
+    try{const relock=await emergencyRelock(commandId,'RESERVATION_OUTCOME_AMBIGUOUS:'+String((reservationError as Error)?.message||reservationError||'MISSING_OR_MALFORMED_RESPONSE'));cleanupVerified=!!relock?.cleanup_verified}catch{cleanupVerified=false}
+    return reply(502,{ok:false,error:'RESERVATION_OUTCOME_AMBIGUOUS',networkRequestPerformed:false,slotConsumptionState:'UNKNOWN_FAIL_CLOSED',cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
+  }
+
+  // Any explicit reservation rejection/replay also relocks immediately. This is authority-reducing only;
+  // it never releases or reopens a consumed slot and prevents bounded unlock/grant authority lingering.
+  if(reservation.ok!==true||reservation.duplicate===true||reservation.network_execution_allowed!==true){
+    let cleanupVerified=false;
+    try{const relock=await emergencyRelock(commandId,'RESERVATION_REJECTED_OR_REPLAYED:'+String(reservation.reason||'NETWORK_EXECUTION_NOT_ALLOWED'));cleanupVerified=!!relock?.cleanup_verified}catch{cleanupVerified=false}
+    return reply(423,{ok:false,error:reservation.reason||'PROOF_REQUEST_RESERVATION_FAILED_OR_REPLAYED',networkRequestPerformed:false,slotRemainsConsumed:reservation.slot_consumed===true,cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
+  }
 
   const started=Date.now();
   let redirectObserved=false,networkPerformed=false,current=new URL(TARGET),redirects=0;
@@ -135,8 +155,6 @@ Deno.serve(async(req:Request)=>{
         if(redirects>=MAX_REDIRECTS)throw new Error('TOO_MANY_REDIRECTS');
         const next=new URL(result.location,current);
         if(next.protocol!=='https:'||next.hostname.toLowerCase()!==current.hostname.toLowerCase())throw new Error('CROSS_HOST_OR_NON_HTTPS_REDIRECT_BLOCKED');
-        // Redirect DNS is not inherited from the prior leg. The next loop performs fresh two-read DNS validation,
-        // chooses a validated IP, and verifies the actual connected remoteAddress against that exact IP.
         current=next;redirects++;continue;
       }
       if(result.status<200||result.status>=300)throw new Error('PROOF_FINAL_STATUS_NOT_2XX');
@@ -146,19 +164,7 @@ Deno.serve(async(req:Request)=>{
       const redirectSatisfied=!redirectObserved||transportLegs.length===redirects+1;
       if(!allPinned)throw new Error('PINNED_IP_RUNTIME_EVIDENCE_INCOMPLETE');
       if(!redirectSatisfied)throw new Error('REDIRECT_RUNTIME_EVIDENCE_INCOMPLETE');
-      const evidence={
-        dns_connect_time_verified:allPinned,
-        dns_runtime_evidence_passed:allPinned,
-        redirect_policy_verified:true,
-        redirect_observed:redirectObserved,
-        redirect_revalidation_required:redirectObserved,
-        redirect_revalidation_satisfied:redirectSatisfied,
-        network_request_performed:networkPerformed,
-        status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,
-        transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,
-        transport_legs:transportLegs,
-        general_production_network_authorized:false
-      };
+      const evidence={dns_connect_time_verified:allPinned,dns_runtime_evidence_passed:allPinned,redirect_policy_verified:true,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_revalidation_satisfied:redirectSatisfied,network_request_performed:networkPerformed,status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,transport_legs:transportLegs,general_production_network_authorized:false};
       let fin:any;
       try{fin=await finalize(requestToken,'SUCCESS',evidence)}catch(fe){const relock=await emergencyRelock(commandId,'FINALIZE_SUCCESS_FAILED:'+String((fe as Error).message||fe));return reply(502,{ok:false,error:'FINALIZE_FAILED_EMERGENCY_RELOCKED',networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,cleanup_verified:!!relock?.cleanup_verified,retryRequiresFreshReviewAndOwnerApproval:true})}
       return reply(200,{ok:true,status:result.status,bytes:result.bytes,redirects,elapsedMs,networkRequestPerformed:networkPerformed,redirectObserved,proofCompleted:!!fin?.proof_completed});
@@ -179,12 +185,13 @@ Deno.serve(async(req:Request)=>{
 - Invocation requires fresh >=32-byte PM_PROOF_EXECUTOR_TOKEN in addition to verify_jwt; token is operator/service-only, never browser/client-visible, and is removed after the one proof attempt.
 - Re-checks persisted VERIFIED Owner command + consumed nonce/gateway audit before each material transport leg; caller assertions are never authority.
 - Requires exactly one active PAOJAI PUBLIC_READ grant globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, not beyond the proof window, with exact safe resource flags.
-- For every network leg, persists the validated DNS answer set, selected pinned IP/family and actual socket remoteAddress/remoteFamily; transport fails closed unless actual remoteAddress equals the exact selected IP.
-- Same-host HTTPS redirects are allowed up to 3 and each followed leg repeats fresh two-read DNS stability, selected-IP binding and actual remote-address verification; zero redirects are valid and recorded honestly.
-- network_request_performed becomes true immediately before the sole post-reservation transport call; any transport failure still consumes the slot.
+- For every network leg, persists validated DNS answers, selected pinned IP/family and actual socket remoteAddress/remoteFamily; transport fails closed unless actual remoteAddress equals selected IP.
+- Same-host HTTPS redirects are allowed up to 3 and each followed leg repeats fresh two-read DNS stability, selected-IP binding and actual remote-address verification; zero redirects are valid.
+- network_request_performed becomes true immediately before post-reservation transport; any transport failure still consumes the slot.
 - Total proof timeout, including redirects, is <=10 seconds; response limit is 1 MiB.
-- Reservation replay is fail-closed before DNS/network: duplicate=true or network_execution_allowed!=true aborts transport.
-- Normal finalize is authoritative cleanup; if finalize fails after reservation, the executor invokes independent pm_internet_transport_proof_emergency_relock_v1 and requires cleanup_verified=true.
-- Emergency cleanup is authority-reducing only and never releases/reuses the consumed slot.
-- Never retry automatically after reservation; failed attempts consume the slot and require fresh review/Owner approval.
+- Reservation replay is fail-closed before DNS/network and now authority-reduces via emergency relock.
+- Reservation RPC error/missing/malformed response is RESERVATION_OUTCOME_AMBIGUOUS: no DNS/network, emergency relock required, slot state treated unknown/consumed-safe, and fresh review/Owner approval required.
+- Normal finalize is authoritative cleanup; if finalize fails after reservation, executor invokes independent emergency relock and requires cleanup_verified=true.
+- Emergency cleanup is authority-reducing only and never releases/reuses a consumed slot.
+- Never retry automatically after reservation; failed/ambiguous attempts require fresh review/Owner approval.
 */
