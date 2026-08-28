@@ -6,7 +6,6 @@ import crypto from 'node:crypto';
 const CANONICAL='https://example.com/';
 const files={executor:process.argv[2],gateway:process.argv[3],approval:process.argv[4]};
 if(!files.executor||!files.gateway||!files.approval) throw new Error('USAGE: node validator executor gateway approval');
-
 const read=(p)=>fs.readFileSync(p,'utf8');
 const sha256=(s)=>crypto.createHash('sha256').update(s).digest('hex');
 const src={executor:read(files.executor),gateway:read(files.gateway),approval:read(files.approval)};
@@ -53,6 +52,18 @@ requireText('gateway',"s.evidence->>'activation_scope'='TRANSPORT_PROOF_SINGLE_R
 requireText('gateway',"s.evidence->>'transport_proof_target_url'='https://example.com/'",'EXACT_TARGET_BINDING');
 requireText('gateway',"coalesce((s.evidence->>'transport_proof_max_requests')::int,0)=1",'ONE_REQUEST_BINDING');
 requireText('gateway',"coalesce((s.evidence->>'general_production_network_authorized')::boolean,true)=false",'GENERAL_NETWORK_FALSE_BINDING');
+requireText('gateway',"cmd.canonical_payload->>'owner_user_id' <> cmd.owner_user_id::text",'PAYLOAD_OWNER_BINDING');
+requireText('gateway',"cmd.canonical_payload->>'device_id' <> cmd.device_id::text",'PAYLOAD_DEVICE_BINDING');
+requireText('gateway',"cmd.canonical_payload->>'capability_key' <> 'CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'",'PAYLOAD_CAPABILITY_BINDING');
+requireText('gateway',"cmd.canonical_payload->>'grantee_agent_key' <> 'PAOJAI_OPERATIONS_AI'",'PAYLOAD_GRANTEE_BINDING');
+requireText('gateway',"cmd.canonical_payload->'allowed_actions' <> '[\"PUBLIC_READ\"]'::jsonb",'PAYLOAD_EXACT_ACTIONS_BINDING');
+requireText('gateway',"requested_grant_minutes')::int,0) <> 10",'PAYLOAD_EXACT_GRANT_DURATION');
+requireText('gateway',"can_delegate')::boolean,true) <> false",'PAYLOAD_NON_DELEGABLE');
+requireText('gateway',"cmd.resource_scope->>'capability_key' <> 'CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'",'RESOURCE_SCOPE_CAPABILITY_BINDING');
+requireText('gateway',"cmd.resource_scope->>'grantee_agent_key' <> 'PAOJAI_OPERATIONS_AI'",'RESOURCE_SCOPE_GRANTEE_BINDING');
+requireText('gateway',"cmd.resource_scope->>'activation_scope' <> 'TRANSPORT_PROOF_SINGLE_REQUEST'",'RESOURCE_SCOPE_INTENT_BINDING');
+requireText('gateway',"cmd.resource_scope->>'transport_proof_target_url' <> 'https://example.com/'",'RESOURCE_SCOPE_TARGET_BINDING');
+requireText('gateway',"transport_proof_max_requests')::int,0) <> 1",'RESOURCE_SCOPE_ONE_REQUEST_BINDING');
 requireText('gateway',"'ALLOW_CRYPTO_BOUND_V2'",'CRYPTO_BOUND_AUDIT_DECISION');
 requireText('gateway',"revoke all on function public.pm_owner_command_gateway_v2(uuid,text) from public, anon, authenticated",'LEAST_PRIVILEGE_REVOKE');
 requireText('gateway',"grant execute on function public.pm_owner_command_gateway_v2(uuid,text) to service_role",'SERVICE_ROLE_ONLY');
@@ -75,12 +86,6 @@ forbidText('approval',".insert({grantee_agent_key:'PAOJAI_OPERATIONS_AI'",'DIREC
 forbidText('approval',"production_network_enabled:true",'GENERAL_NETWORK_ENABLE');
 forbidText('approval',"owner_lockdown_active:false",'DIRECT_LOCKDOWN_RELEASE');
 
-const result={
-  passed:failures.length===0,
-  canonicalTarget:CANONICAL,
-  files,
-  sha256:Object.fromEntries(Object.entries(src).map(([k,v])=>[k,sha256(v)])),
-  failures
-};
+const result={passed:failures.length===0,canonicalTarget:CANONICAL,files,sha256:Object.fromEntries(Object.entries(src).map(([k,v])=>[k,sha256(v)])),failures};
 console.log(JSON.stringify(result,null,2));
 if(failures.length) process.exit(1);
