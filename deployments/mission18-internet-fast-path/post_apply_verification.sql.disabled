@@ -2,6 +2,26 @@
 -- Run after each material post-freeze implementation step and again immediately before requesting Owner Passkey.
 
 select jsonb_build_object(
+  'gateway', (
+    select jsonb_build_object('mode',mode,'owner_lockdown_active',owner_lockdown_active,
+      'production_network_enabled',production_network_enabled,'updated_at',updated_at)
+    from public.pm_owner_internet_gateway_control_shadow_v1
+    where control_key='CONTROLLED_INTERNET_GATEWAY' limit 1
+  ),
+  'active_paojai_public_read_grants', (
+    select count(*)::int from public.pm_agent_capability_grants_v1 g
+    where g.grantee_agent_key='PAOJAI_OPERATIONS_AI' and g.status='ACTIVE'
+      and g.allowed_actions @> array['PUBLIC_READ']::text[]
+      and (g.expires_at is null or g.expires_at>now())
+  ),
+  'verified_live_transport_commands', (
+    select count(*)::int from public.pm_signed_owner_commands_v1 c
+    where c.verification_state='VERIFIED' and c.verification_reason='CRYPTO_BOUND_GATEWAY_V2'
+      and c.expires_at>now() and c.command_type='GRANT_CAPABILITY' and c.action_scope='PUBLIC_READ'
+      and c.canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'
+      and c.canonical_payload->>'transport_proof_target_url'='https://example.com/'
+  ),
+  'owner_exact_payload_binding', public.pm_owner_gateway_exact_payload_binding_readiness_v1(),
   'preflight', public.pm_internet_pilot_preflight_readiness_v2(),
   'post_freeze_v3', public.pm_internet_post_freeze_implementation_readiness_v3(),
   'contracts', public.pm_internet_post_freeze_contract_validation_v1(),
@@ -24,14 +44,15 @@ select jsonb_build_object(
 -- Required interpretation before Owner Passkey:
 -- 1. Feature Freeze / Stabilization Exit gate must be clear.
 -- 2. All six implementation gaps must be closed; v3 technical_implementation_complete=true.
--- 3. contract validation: missing_count=0, privilege_fail_count=0, passed=true.
--- 4. authority surface: passed=true, exposed/unexpected arrays empty.
--- 5. concurrency readiness must pass only after Production atomic reservation exists AND the direct simultaneous-caller canary proves exactly one winner with zero proof-network side effect.
--- 6. Central / Action / Guardian latest runs must have zero failure / zero Critical regression.
--- 7. Recovery/Kill-Switch, rollback, audit-provenance and response-limit checks must pass.
--- 8. post_freeze_v3.pre_owner_gates_passed=true and owner_action_required_now=true before asking the human for fresh Passkey.
--- 9. Gateway must still have owner_lockdown_active=true and general production_network_enabled=false before Owner approval.
--- 10. No active PAOJAI PUBLIC_READ proof grant and no consumed proof request before fresh VERIFIED v3+ command.
+-- 3. owner_exact_payload_binding.passed=true and no legacy caller-asserted signature authority is accepted.
+-- 4. contract validation: missing_count=0, privilege_fail_count=0, passed=true.
+-- 5. authority surface: passed=true, exposed/unexpected arrays empty.
+-- 6. concurrency readiness passes only after Production atomic reservation exists AND server-derived simultaneous-caller canary evidence proves exactly one winner, current reservation SHA match, real proof lane pristine, Owner Lockdown true, and zero proof-network side effect.
+-- 7. Central / Action / Guardian latest runs must have zero failure / zero Critical regression.
+-- 8. Recovery/Kill-Switch, rollback, audit-provenance and response-limit checks must pass.
+-- 9. post_freeze_v3.pre_owner_gates_passed=true and owner_action_required_now=true before asking the human for fresh Passkey.
+-- 10. Gateway must still have owner_lockdown_active=true and general production_network_enabled=false before Owner approval.
+-- 11. active_paojai_public_read_grants=0 and verified_live_transport_commands=0 before fresh Owner approval.
 
 -- After the one real proof request, rerun Central/Action/Guardian, authority, contract,
 -- concurrency/failure-policy and Recovery/Kill-Switch checks. Completion requires
