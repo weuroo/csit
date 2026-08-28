@@ -112,9 +112,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # A local Supabase Postgres image already owns several platform-managed roles.
-          # Replay roles.sql without ON_ERROR_STOP, then allow only the known
-          # reserved-role protection emitted by the local Supabase image.
+          # Provision only missing Supabase platform-managed roles referenced by
+          # roles.sql. These are local verification placeholders (NOLOGIN) and
+          # never leave this ephemeral container.
+          grep -oE '"supabase_[A-Za-z0-9_]+"' "$RESTORE_DIR/plain/roles.sql" \
+            | tr -d '"' | sort -u > "$RESTORE_DIR/supabase-managed-roles.txt" || true
+          while IFS= read -r role; do
+            [[ -n "$role" ]] || continue
+            EXISTS="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select 1 from pg_roles where rolname='${role}'" | tr -d '[:space:]')"
+            if [[ "$EXISTS" != "1" ]]; then
+              echo "Provisioning local placeholder for managed role: $role"
+              docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+                -c "CREATE ROLE \"${role}\" NOLOGIN;"
+            fi
+          done < "$RESTORE_DIR/supabase-managed-roles.txt"
+
           set +e
           docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres \
             < "$RESTORE_DIR/plain/roles.sql" \
