@@ -27,12 +27,11 @@ jobs:
           set -euo pipefail
           mapfile -t triggers < <(find .backup-transfer/triggers -maxdepth 1 -type f -name 'storage-*.trigger' -print | sort)
           [[ "${#triggers[@]}" -eq 1 ]] || { echo "::error::Expected exactly one approved Storage transfer trigger; found ${#triggers[@]}"; exit 20; }
-          trigger="${triggers[0]}"
-          source_run="$(tr -d '[:space:]' < "$trigger")"
+          source_run="$(tr -d '[:space:]' < "${triggers[0]}")"
           [[ "$source_run" =~ ^[0-9]+$ ]] || { echo '::error::Invalid source run ID'; exit 21; }
           echo "source_run=$source_run" >> "$GITHUB_OUTPUT"
 
-      - name: Download encrypted Storage artifact only
+      - name: Download and verify encrypted Storage artifact
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -44,13 +43,12 @@ jobs:
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "supabase-storage-${BUCKET}-${SOURCE_RUN}" --dir source-artifact
           test -f "source-artifact/storage-${BUCKET}.tar.gz.gpg"
           test -f "source-artifact/ARTIFACT_SHA256SUMS"
-          checksum="$(awk 'NF >= 2 {print $1; exit}' source-artifact/ARTIFACT_SHA256SUMS)"
-          [[ "$checksum" =~ ^[0-9a-fA-F]{64}$ ]] || { echo '::error::Invalid encrypted payload checksum'; exit 22; }
+          expected="$(awk 'NF >= 2 {print $1; exit}' source-artifact/ARTIFACT_SHA256SUMS)"
+          [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || { echo '::error::Invalid encrypted payload checksum'; exit 22; }
           actual="$(sha256sum "source-artifact/storage-${BUCKET}.tar.gz.gpg" | awk '{print $1}')"
-          [[ "$actual" == "$checksum" ]] || { echo '::error::Encrypted payload SHA-256 mismatch'; exit 23; }
-          echo "encrypted_sha=$actual" >> "$GITHUB_OUTPUT"
+          [[ "$actual" == "$expected" ]] || { echo '::error::Encrypted payload SHA-256 mismatch'; exit 23; }
 
-      - name: Split encrypted payload without decrypting
+      - name: Split encrypted payload into connector-safe chunks
         id: split
         shell: bash
         env:
@@ -60,14 +58,14 @@ jobs:
           set -euo pipefail
           mkdir -p vault-parts
           src="source-artifact/storage-${BUCKET}.tar.gz.gpg"
-          split -b 240M -d -a 2 "$src" "vault-parts/storage-${BUCKET}-run${SOURCE_RUN}.gpg.part-"
+          split -b 80M -d -a 2 "$src" "vault-parts/storage-${BUCKET}-run${SOURCE_RUN}.gpg.part-"
           count="$(find vault-parts -maxdepth 1 -type f -name '*.part-*' | wc -l | tr -d ' ')"
-          [[ "$count" -ge 2 && "$count" -le 4 ]] || { echo "::error::Unexpected chunk count: $count"; exit 24; }
+          [[ "$count" -eq 10 ]] || { echo "::error::Unexpected chunk count for approved artifact: $count"; exit 24; }
           sha256sum vault-parts/*.part-* > vault-parts/CHUNKS_SHA256SUMS
           original_sha="$(sha256sum "$src" | awk '{print $1}')"
           original_bytes="$(stat -c '%s' "$src")"
           cat > vault-parts/REASSEMBLY_MANIFEST.txt <<EOF
-          format=pm-agency-storage-vault-transfer-v2
+          format=pm-agency-storage-vault-transfer-v3
           source_backup_run=${SOURCE_RUN}
           source_artifact=supabase-storage-${BUCKET}-${SOURCE_RUN}
           bucket=${BUCKET}
@@ -75,66 +73,62 @@ jobs:
           original_sha256=${original_sha}
           original_bytes=${original_bytes}
           chunk_count=${count}
-          chunk_size_target=240MiB
-          reassemble_command=cat storage-${BUCKET}-run${SOURCE_RUN}.gpg.part-* > storage-${BUCKET}.tar.gz.gpg
-          verify_command=sha256sum storage-${BUCKET}.tar.gz.gpg
+          chunk_size_target=80MiB
+          transfer_wrapper=github-actions-artifact-zip-per-chunk
+          restore_step_1=extract each part ZIP to obtain .gpg.part-XX
+          restore_step_2=verify every part using CHUNKS_SHA256SUMS
+          restore_step_3=cat storage-${BUCKET}-run${SOURCE_RUN}.gpg.part-* > storage-${BUCKET}.tar.gz.gpg
+          restore_step_4=verify reassembled SHA-256 equals original_sha256
           EOF
           cat > vault-parts/TRANSFER_RESULT.json <<EOF
           {
-            "status": "CHUNK_ARTIFACTS_READY",
+            "status": "CONNECTOR_SAFE_CHUNK_ARTIFACTS_READY",
             "source_backup_run": "${SOURCE_RUN}",
             "transfer_workflow_run": "${GITHUB_RUN_ID}",
             "chunk_count": ${count},
+            "chunk_size_target": "80MiB",
             "original_encrypted_sha256": "${original_sha}",
             "original_encrypted_bytes": ${original_bytes},
             "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
           echo "chunk_count=$count" >> "$GITHUB_OUTPUT"
-          echo "original_sha=$original_sha" >> "$GITHUB_OUTPUT"
-          echo "original_bytes=$original_bytes" >> "$GITHUB_OUTPUT"
 
       - name: Upload vault chunk 00
         uses: actions/upload-artifact@v4
-        with:
-          name: storage-vault-${{ steps.source.outputs.source_run }}-part-00
-          path: vault-parts/*part-00
-          retention-days: 3
-          compression-level: 0
-          if-no-files-found: error
-
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-00", path: "vault-parts/*part-00", retention-days: 3, compression-level: 0, if-no-files-found: error }
       - name: Upload vault chunk 01
         uses: actions/upload-artifact@v4
-        with:
-          name: storage-vault-${{ steps.source.outputs.source_run }}-part-01
-          path: vault-parts/*part-01
-          retention-days: 3
-          compression-level: 0
-          if-no-files-found: error
-
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-01", path: "vault-parts/*part-01", retention-days: 3, compression-level: 0, if-no-files-found: error }
       - name: Upload vault chunk 02
         uses: actions/upload-artifact@v4
-        with:
-          name: storage-vault-${{ steps.source.outputs.source_run }}-part-02
-          path: vault-parts/*part-02
-          retention-days: 3
-          compression-level: 0
-          if-no-files-found: error
-
-      - name: Upload vault chunk 03 when present
-        if: ${{ steps.split.outputs.chunk_count == '4' }}
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-02", path: "vault-parts/*part-02", retention-days: 3, compression-level: 0, if-no-files-found: error }
+      - name: Upload vault chunk 03
         uses: actions/upload-artifact@v4
-        with:
-          name: storage-vault-${{ steps.source.outputs.source_run }}-part-03
-          path: vault-parts/*part-03
-          retention-days: 3
-          compression-level: 0
-          if-no-files-found: error
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-03", path: "vault-parts/*part-03", retention-days: 3, compression-level: 0, if-no-files-found: error }
+      - name: Upload vault chunk 04
+        uses: actions/upload-artifact@v4
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-04", path: "vault-parts/*part-04", retention-days: 3, compression-level: 0, if-no-files-found: error }
+      - name: Upload vault chunk 05
+        uses: actions/upload-artifact@v4
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-05", path: "vault-parts/*part-05", retention-days: 3, compression-level: 0, if-no-files-found: error }
+      - name: Upload vault chunk 06
+        uses: actions/upload-artifact@v4
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-06", path: "vault-parts/*part-06", retention-days: 3, compression-level: 0, if-no-files-found: error }
+      - name: Upload vault chunk 07
+        uses: actions/upload-artifact@v4
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-07", path: "vault-parts/*part-07", retention-days: 3, compression-level: 0, if-no-files-found: error }
+      - name: Upload vault chunk 08
+        uses: actions/upload-artifact@v4
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-08", path: "vault-parts/*part-08", retention-days: 3, compression-level: 0, if-no-files-found: error }
+      - name: Upload vault chunk 09
+        uses: actions/upload-artifact@v4
+        with: { name: "storage-vault-${{ steps.source.outputs.source_run }}-80m-part-09", path: "vault-parts/*part-09", retention-days: 3, compression-level: 0, if-no-files-found: error }
 
       - name: Upload reassembly and audit metadata
         uses: actions/upload-artifact@v4
         with:
-          name: storage-vault-${{ steps.source.outputs.source_run }}-manifest
+          name: storage-vault-${{ steps.source.outputs.source_run }}-80m-manifest
           path: |
             vault-parts/CHUNKS_SHA256SUMS
             vault-parts/REASSEMBLY_MANIFEST.txt
