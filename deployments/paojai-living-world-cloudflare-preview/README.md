@@ -11,15 +11,15 @@ Isolated Cloudflare Pages target for testing Paojai Living World UX v2 without m
 - Production branch for this isolated preview project: `preview/living-world-cloudflare-pages-20260828`
 - Root directory: `deployments/paojai-living-world-cloudflare-preview`
 - Framework preset: None
-- Build command: leave blank
+- Build command: `exit 0`
 - Build output directory: `.`
 - Environment variables: none required
 - Recommended build watch include: `deployments/paojai-living-world-cloudflare-preview/**`
 
 ## Data / API
-- Public-safe API: `https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-world-public`
-- API is GET/OPTIONS only and currently returns `Access-Control-Allow-Origin: *`, so a Cloudflare Pages origin can read it without a backend change.
-- Mission World uses the existing public-safe mission endpoint.
+- Living World API: `https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-world-public`
+- Mission World API: `https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-mission-public`
+- Both endpoints are GET/OPTIONS read-only and currently return `Access-Control-Allow-Origin: *`, so a Cloudflare Pages origin can read them without a backend change.
 
 ## Safety boundaries
 - Read-only visualization only.
