@@ -8,11 +8,11 @@ on:
         required: true
         default: pm-line-evidence
       expected_object_count:
-        description: Expected object count from live evidence
+        description: Minimum known object count from live evidence
         required: true
         default: '714'
       expected_total_bytes:
-        description: Expected total bytes from live evidence
+        description: Minimum known total bytes from live evidence
         required: true
         default: '770625696'
 
@@ -57,7 +57,7 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install --silent @supabase/supabase-js@2
 
-      - name: Download private Storage objects and verify stable listing
+      - name: Download private Storage objects and verify snapshot set
         shell: bash
         env:
           SUPABASE_BACKUP_SECRET_KEY: ${{ secrets.SUPABASE_BACKUP_SECRET_KEY }}
@@ -76,8 +76,8 @@ jobs:
           const projectRef = process.env.PROJECT_REF
           const key = process.env.SUPABASE_BACKUP_SECRET_KEY
           const bucket = process.env.BUCKET
-          const expectedCount = Number(process.env.EXPECTED_COUNT)
-          const expectedBytes = Number(process.env.EXPECTED_BYTES)
+          const minimumKnownCount = Number(process.env.EXPECTED_COUNT)
+          const minimumKnownBytes = Number(process.env.EXPECTED_BYTES)
           const root = path.resolve(process.env.STORAGE_BACKUP_DIR, 'plain')
           const objectsDir = path.join(root, 'objects')
           const supabase = createClient(`https://${projectRef}.supabase.co`, key, {
@@ -125,8 +125,8 @@ jobs:
 
           const before = stableSort(await listDir(''))
           const listedBytes = before.reduce((sum, x) => sum + x.size, 0)
-          if (before.length !== expectedCount) throw new Error(`Object count changed: live-list=${before.length}, expected=${expectedCount}`)
-          if (listedBytes !== expectedBytes) throw new Error(`Storage bytes changed: live-list=${listedBytes}, expected=${expectedBytes}`)
+          if (before.length < minimumKnownCount) throw new Error(`Object count regressed: live-list=${before.length}, minimum-known=${minimumKnownCount}`)
+          if (listedBytes < minimumKnownBytes) throw new Error(`Storage bytes regressed: live-list=${listedBytes}, minimum-known=${minimumKnownBytes}`)
           const beforeFp = listingFingerprint(before)
 
           const manifest = []
@@ -157,27 +157,32 @@ jobs:
           }
 
           const after = stableSort(await listDir(''))
-          const afterBytes = after.reduce((sum, x) => sum + x.size, 0)
-          const afterFp = listingFingerprint(after)
-          if (after.length !== before.length || afterBytes !== listedBytes || afterFp !== beforeFp) {
-            throw new Error('Storage listing changed during backup window. Fail closed; discard this run and retry later.')
+          const afterByName = new Map(after.map(x => [x.name, x]))
+          for (const obj of before) {
+            const current = afterByName.get(obj.name)
+            if (!current) throw new Error(`Snapshot object disappeared during backup: ${obj.name}`)
+            if (current.size !== obj.size || (current.updated_at ?? null) !== (obj.updated_at ?? null)) {
+              throw new Error(`Snapshot object changed during backup: ${obj.name}`)
+            }
           }
-          if (downloadedBytes !== expectedBytes) throw new Error(`Downloaded byte total mismatch: ${downloadedBytes} vs expected ${expectedBytes}`)
+          if (downloadedBytes !== listedBytes) throw new Error(`Downloaded byte total mismatch: ${downloadedBytes} vs snapshot ${listedBytes}`)
+          const appendedObjects = Math.max(0, after.length - before.length)
 
           const manifestDoc = {
-            format: 'pm-agency-supabase-storage-backup-v1',
+            format: 'pm-agency-supabase-storage-backup-v2',
             project_ref: projectRef,
             bucket,
             created_utc: new Date().toISOString(),
-            object_count: manifest.length,
-            total_bytes: downloadedBytes,
-            stable_listing_sha256: beforeFp,
+            snapshot_object_count: manifest.length,
+            snapshot_total_bytes: downloadedBytes,
+            snapshot_listing_sha256: beforeFp,
+            append_only_objects_seen_after_snapshot: appendedObjects,
             objects: manifest
           }
           await fs.writeFile(path.join(root, 'STORAGE_MANIFEST.json'), JSON.stringify(manifestDoc, null, 2), { mode: 0o600 })
           const manifestSha = crypto.createHash('sha256').update(await fs.readFile(path.join(root, 'STORAGE_MANIFEST.json'))).digest('hex')
           await fs.writeFile(path.join(root, 'STORAGE_MANIFEST.sha256'), `${manifestSha}  STORAGE_MANIFEST.json\n`, { mode: 0o600 })
-          console.log(`Storage capture verified: objects=${manifest.length}, bytes=${downloadedBytes}, stable listing=yes.`)
+          console.log(`Storage snapshot verified: objects=${manifest.length}, bytes=${downloadedBytes}, appended_after_start=${appendedObjects}.`)
           NODE
           node ./storage-backup.mjs
 
