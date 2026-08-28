@@ -36,6 +36,15 @@ select jsonb_build_object(
     where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
     limit 1
   ),
+  'active_paojai_public_read_grants', (
+    select count(*)::int
+    from public.pm_agent_capability_grants_v1 g
+    where g.grantee_agent_key='PAOJAI_OPERATIONS_AI'
+      and g.status='ACTIVE'
+      and g.allowed_actions @> array['PUBLIC_READ']::text[]
+      and (g.expires_at is null or g.expires_at > now())
+  ),
+  'legacy_owner_gateway_crypto_binding', public.pm_owner_gateway_crypto_binding_readiness_v1(),
   'preflight', public.pm_internet_pilot_preflight_readiness_v2(),
   'post_freeze', public.pm_internet_post_freeze_implementation_readiness_v1(),
   'contracts', public.pm_internet_post_freeze_contract_validation_v1(),
@@ -61,7 +70,8 @@ select public.pm_run_guardian_safety_regression() as guardian_run_id;
 -- * feature_freeze=true / autonomy_expansion_allowed=false => STOP before any authority-changing implementation.
 -- * owner_lockdown_active must remain true.
 -- * production_network_enabled must remain false.
--- * active PAOJAI PUBLIC_READ grant count must remain zero.
+-- * active_paojai_public_read_grants must equal 0.
+-- * legacy_owner_gateway_crypto_binding is expected to remain blocked until the post-freeze v2 crypto-bound gateway replaces v1 for Mission #18; NEVER treat a passing caller-asserted signature path as authority.
 -- * authority passed=true with no exposed/unexpected write surface.
 -- * atomic_shadow and failure_policy must pass; these are NOT substitutes for runtime concurrency proof.
 -- * concurrency may remain false with PRODUCTION_ATOMIC_CONSUME_NOT_IMPLEMENTED until post-freeze implementation.
