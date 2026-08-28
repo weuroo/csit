@@ -150,6 +150,13 @@ jobs:
             echo "roles.sql replay completed without errors."
           fi
 
+          # Production Supabase has platform-owned schemas that are not always
+          # pre-created in the standalone verification image. Create only the
+          # known platform schema required by this dump; application schemas are
+          # still restored strictly from schema.sql.
+          docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+            -c 'CREATE SCHEMA IF NOT EXISTS vault AUTHORIZATION postgres;'
+
           docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
             < "$RESTORE_DIR/plain/schema.sql"
           {
