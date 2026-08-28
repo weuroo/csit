@@ -1,12 +1,15 @@
 // PRE-STAGED ONLY. DO NOT RUN AS A DEPLOYMENT DURING FEATURE FREEZE.
-// Blocks proof-executor promotion unless an independent authority-reducing cleanup path is wired.
+// Blocks proof-executor promotion unless an independent authority-reducing cleanup path is wired
+// and its reviewed contract requires zero active PAOJAI PUBLIC_READ authority globally.
 import fs from 'node:fs';
-const p='deployments/mission18-internet-fast-path/proof_executor_candidate.ts.disabled';
-const s=fs.readFileSync(p,'utf8');
+const executorPath='deployments/mission18-internet-fast-path/proof_executor_candidate.ts.disabled';
+const contractPath='deployments/mission18-internet-fast-path/emergency_relock_contract.sql.disabled';
+const s=fs.readFileSync(executorPath,'utf8');
+const c=fs.readFileSync(contractPath,'utf8');
 const required=[
-  "pm_internet_transport_proof_emergency_relock_v1",
-  "cleanup_verified",
-  "retryRequiresFreshReviewAndOwnerApproval"
+  'pm_internet_transport_proof_emergency_relock_v1',
+  'cleanup_verified',
+  'retryRequiresFreshReviewAndOwnerApproval'
 ];
 const missing=required.filter(x=>!s.includes(x));
 if(missing.length){
@@ -16,6 +19,16 @@ if(missing.length){
 // Normal finalize failure must not be silently swallowed.
 if(/catch\s*\{\s*\}/.test(s) || /catch\s*\([^)]*\)\s*\{\s*\}/.test(s)){
   console.error('MISSION18_SILENT_CLEANUP_FAILURE_FORBIDDEN');
+  process.exit(1);
+}
+const contractFailures=[];
+const must=(re,msg)=>{if(!re.test(c))contractFailures.push(msg)};
+must(/EVERY active PAOJAI_OPERATIONS_AI grant whose allowed_actions contains PUBLIC_READ/i,'emergency relock contract does not require global PAOJAI PUBLIC_READ revocation');
+must(/global PAOJAI PUBLIC_READ active count\s*=\s*0/i,'global PUBLIC_READ zero postcondition missing');
+must(/cleanup_verified MUST NOT be true unless[\s\S]*owner_lockdown_active=true[\s\S]*production_network_enabled=false[\s\S]*proof lane enabled=false[\s\S]*PUBLIC_READ[\s\S]*= 0/i,'cleanup_verified is not bound to authority-reducing postconditions');
+must(/Never decrement network_request_count, never clear consumed request token, never reopen a slot/i,'consume-on-reservation/no-autorelease invariant missing');
+if(contractFailures.length){
+  console.error('MISSION18_EMERGENCY_RELOCK_CONTRACT_BLOCKED', {failures:contractFailures});
   process.exit(1);
 }
 console.log('MISSION18_EMERGENCY_RELOCK_STATIC_PASS');
