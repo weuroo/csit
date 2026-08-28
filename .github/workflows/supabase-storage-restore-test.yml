@@ -59,7 +59,9 @@ jobs:
         run: |
           set -euo pipefail
           cd restore-artifact
-          sha256sum -c ARTIFACT_SHA256SUMS
+          checksum="$(awk 'NF >= 2 {print $1; exit}' ARTIFACT_SHA256SUMS)"
+          [[ "$checksum" =~ ^[0-9a-fA-F]{64}$ ]] || { echo '::error::Invalid artifact checksum record'; exit 23; }
+          printf '%s  %s\n' "$checksum" "storage-${BUCKET}.tar.gz.gpg" | sha256sum -c -
 
       - name: Decrypt and verify full snapshot offline
         shell: bash
