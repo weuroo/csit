@@ -18,6 +18,7 @@ requireText('executor',`const TARGET='${CANONICAL}'`,'EXACT_CANONICAL_TARGET');
 requireText('executor','GENERAL_PRODUCTION_NETWORK_MUST_REMAIN_DISABLED','GENERAL_NETWORK_FAIL_CLOSED');
 requireText('executor','pm_internet_transport_proof_reserve_request_v1','ATOMIC_RESERVATION');
 requireText('executor','pm_internet_transport_proof_finalize_request_v1','IDEMPOTENT_FINALIZE');
+requireText('executor','pm_internet_transport_proof_emergency_relock_v1','INDEPENDENT_EMERGENCY_RELOCK');
 requireText('executor','CALLER_SELECTED_TARGET_FORBIDDEN','NO_CALLER_TARGET');
 requireText('executor','MAX_TOTAL_MS=10_000','TOTAL_TIMEOUT_10S');
 requireText('executor','MAX_BYTES=1_048_576','MAX_RESPONSE_1MIB');
@@ -27,17 +28,25 @@ requireText('executor','slotRemainsConsumed:true','FAILED_SLOT_CONSUMED');
 requireText('executor','retryRequiresFreshReviewAndOwnerApproval:true','FAILED_RETRY_REQUIRES_FRESH_OWNER');
 requireText('executor','can_delegate','DELEGATION_CHECK');
 requireText('executor',"socket.once('connect'",'REAL_TCP_CONNECT_EVIDENCE');
-requireText('executor','preferredValidatedIp','VALIDATED_IPV4_PREFERRED_WITH_FALLBACK');
+requireText('executor','selected_ip','VALIDATED_PINNED_IP');
+requireText('executor','remote_address_matches_selected','REMOTE_ADDRESS_PIN_BINDING');
 requireText('executor','redirect_revalidation_required:redirectObserved','REDIRECT_REQUIREMENT_EXPLICIT');
 requireText('executor','redirect_revalidation_satisfied:redirectSatisfied','REDIRECT_SATISFACTION_EXPLICIT');
 requireText('executor','network_request_performed:networkPerformed','NETWORK_EVIDENCE_EXPLICIT');
-requireText('executor',"redirectConnectTimeVerified=false",'NO_PRESET_REDIRECT_CONNECT_PROOF');
+requireText('executor','network_execution_allowed!==true','RESERVATION_NETWORK_AUTH_EXPLICIT');
+requireText('executor','duplicate===true','RESERVATION_REPLAY_FAIL_CLOSED');
+requireText('executor','cleanup_verified','CLEANUP_VERIFICATION_EXPLICIT');
 forbidText('executor','paojai-mission-control-hub.vercel.app/api/internet-proof-redirect','OLD_PM_TARGET');
 forbidText('executor','EXPECTED_REDIRECT_PATH','MANDATORY_REDIRECT_ASSUMPTION');
 forbidText('executor',"url=String(body.url",'CALLER_URL_PARSE');
 forbidText('executor','production_network_enabled&&','GENERAL_NETWORK_ENABLE_DEPENDENCY');
 forbidText('executor','redirectObserved?true:true','FABRICATED_REDIRECT_CONNECT_EVIDENCE');
-forbidText('executor','networkPerformed=true;\n\n      if(result.status','POST_RESPONSE_ONLY_NETWORK_EVIDENCE');
+forbidText('executor','signature_verified','CALLER_SIGNATURE_AUTHORITY');
+
+// Reservation ambiguity must be resolved before promotion. A committed reservation with a lost RPC
+// response cannot be treated as a non-consuming rejection. Promotion remains blocked until the executor
+// has an explicit ambiguous-outcome branch that emergency-relocks before any DNS/network attempt.
+requireText('executor','RESERVATION_OUTCOME_AMBIGUOUS','AMBIGUOUS_RESERVATION_FAIL_CLOSED_MARKER');
 
 // Crypto-bound Owner Command Gateway invariants.
 requireText('gateway','pm_owner_command_gateway_v2','GATEWAY_V2');
