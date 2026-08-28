@@ -1,0 +1,99 @@
+name: Supabase Backup Export (Fail-Closed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_ref:
+        description: Supabase project ref
+        required: true
+        default: bvnmwfhqgdevupvcqqyl
+
+permissions:
+  contents: read
+
+env:
+  BACKUP_DIR: backup-output
+
+jobs:
+  export:
+    name: Encrypted logical backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Safety gate — required secrets
+        shell: bash
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_DB_URL:-}" ]]; then
+            echo "::error::Missing repository secret SUPABASE_DB_URL. No backup was attempted."
+            exit 20
+          fi
+          if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]]; then
+            echo "::error::Missing repository secret BACKUP_ENCRYPTION_PASSPHRASE. No backup was attempted."
+            exit 21
+          fi
+          case "$SUPABASE_DB_URL" in
+            *"${{ inputs.project_ref }}"*) ;;
+            *)
+              echo "::error::Database URL does not match requested project ref. Fail closed."
+              exit 22
+              ;;
+          esac
+
+      - name: Install Supabase CLI and age
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global supabase@latest
+          sudo apt-get update -y
+          sudo apt-get install -y age
+
+      - name: Export roles, schema, and data
+        shell: bash
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$BACKUP_DIR/plain"
+          supabase db dump --db-url "$SUPABASE_DB_URL" --role-only -f "$BACKUP_DIR/plain/roles.sql"
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f "$BACKUP_DIR/plain/schema.sql"
+          supabase db dump --db-url "$SUPABASE_DB_URL" --data-only --use-copy -f "$BACKUP_DIR/plain/data.sql"
+          sha256sum "$BACKUP_DIR/plain/roles.sql" "$BACKUP_DIR/plain/schema.sql" "$BACKUP_DIR/plain/data.sql" > "$BACKUP_DIR/plain/SHA256SUMS"
+          printf 'project_ref=%s\ncreated_utc=%s\n' "${{ inputs.project_ref }}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BACKUP_DIR/plain/MANIFEST.txt"
+
+      - name: Encrypt backup bundle
+        shell: bash
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          tar -C "$BACKUP_DIR/plain" -czf "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz" .
+          printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | age --encrypt --passphrase --output "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.age" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
+          sha256sum "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.age" > "$BACKUP_DIR/ARTIFACT_SHA256SUMS"
+          rm -rf "$BACKUP_DIR/plain" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
+
+      - name: Upload encrypted artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-backup-${{ inputs.project_ref }}-${{ github.run_id }}
+          path: |
+            backup-output/supabase-${{ inputs.project_ref }}.tar.gz.age
+            backup-output/ARTIFACT_SHA256SUMS
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Confirm no plaintext remains
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -d "$BACKUP_DIR/plain"
+          test ! -f "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
+          echo "Encrypted backup artifact created; plaintext removed from runner workspace."
