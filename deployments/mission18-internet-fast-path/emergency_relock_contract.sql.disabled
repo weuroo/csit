@@ -1,0 +1,42 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Mission #18 independent fail-closed cleanup contract.
+-- Purpose: authority reduction only if normal finalize cannot complete after the one-request slot has been consumed.
+-- Re-read live schema and review exact column/status semantics before activation.
+
+-- REQUIRED Production function after Stabilization Exit:
+--   public.pm_internet_transport_proof_emergency_relock_v1(uuid,text)
+-- Inputs:
+--   p_command_id uuid  : exact VERIFIED transport-proof Owner command
+--   p_reason text      : bounded executor/finalize failure reason for audit only
+-- SECURITY DEFINER; EXECUTE service_role only; PUBLIC/anon/authenticated revoked.
+
+-- MANDATORY EFFECTS, atomically where feasible:
+-- 1. Lock CONTROLLED_INTERNET_GATEWAY row FOR UPDATE.
+-- 2. Set owner_lockdown_active=true.
+-- 3. Set production_network_enabled=false unconditionally.
+-- 4. Set gateway mode back to SHADOW_ONLY / non-network operational state.
+-- 5. Disable CONTROLLED_INTERNET_TRANSPORT_PROOF lane.
+-- 6. Never decrement network_request_count, never clear consumed request token, never reopen a slot.
+-- 7. Revoke/expire every active PAOJAI_OPERATIONS_AI PUBLIC_READ grant tied to p_command_id.
+-- 8. Do not create any grant, command, nonce, approval, unlock, reservation, or network authority.
+-- 9. Preserve request/audit/provenance evidence and append emergency-relock audit evidence.
+-- 10. Be idempotent: repeated calls can only maintain/reduce authority, never restore it.
+
+-- AUTHORITY REQUIREMENT:
+-- Emergency relock is an authority-reducing kill-switch path. It must not depend on caller-supplied
+-- signature_verified or on the proof window still being open. It may use p_command_id solely to scope
+-- revocation/audit, but failure to resolve the command must still force gateway lockdown + general-network=false + lane disabled.
+
+-- FAIL-CLOSED GUARANTEE:
+-- Once the reservation has been acquired, any executor/finalize exception must attempt normal finalize once.
+-- If finalize errors or cannot prove cleanup completion, executor must call emergency relock before returning.
+-- Failure of both finalize and emergency relock is CRITICAL and must be surfaced as cleanup_verified=false.
+-- No automatic proof retry is allowed; the consumed slot remains consumed and fresh review/Owner approval is required.
+
+-- POST-CALL VERIFICATION MUST PROVE:
+-- owner_lockdown_active=true
+-- production_network_enabled=false
+-- proof lane enabled=false
+-- active PAOJAI PUBLIC_READ grants for the command = 0
+-- consumed request token/slot remains consumed
+-- Recovery/Kill-Switch + Central/Action/Guardian + authority checks pass before closure.
