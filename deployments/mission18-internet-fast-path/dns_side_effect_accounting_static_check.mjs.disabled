@@ -1,0 +1,22 @@
+// PRE-STAGED ONLY. DO NOT ENABLE OR DEPLOY DURING FEATURE FREEZE.
+// Mission #18 promotion guard: DNS is a network side effect and must be counted immediately after atomic reservation.
+import fs from 'node:fs';
+
+const p=new URL('./proof_executor_candidate.ts.disabled', import.meta.url);
+const s=fs.readFileSync(p,'utf8');
+const fail=(m)=>{console.error('BLOCK:',m);process.exitCode=1};
+
+const loop=s.indexOf('while(true)');
+const dns=s.indexOf('stablePublicDns(',loop);
+const mark=s.indexOf('networkPerformed=true',loop);
+if(loop<0||dns<0) fail('executor transport loop/DNS call not found');
+if(mark<0||mark>dns) fail('networkPerformed must become true BEFORE first post-reservation DNS resolution; DNS itself is network activity');
+
+const reserve=s.indexOf("pm_internet_transport_proof_reserve_request_v1");
+if(reserve<0||mark<reserve) fail('network accounting marker must occur only after atomic reservation attempt path');
+
+if(!s.includes('network_request_performed:networkPerformed')) fail('finalized evidence must persist network_request_performed');
+if(!s.includes('retryRequiresFreshReviewAndOwnerApproval:true')) fail('failed proof path must require fresh review/Owner approval');
+if(!s.includes('slotRemainsConsumed:true')) fail('failed post-reservation proof must preserve consumed-slot semantics');
+
+if(!process.exitCode) console.log('PASS: DNS/network side-effect accounting promotion guard');
