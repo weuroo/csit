@@ -11,19 +11,25 @@ const failures=[];
 const req=(re,label)=>{if(!re.test(s))failures.push(label)};
 
 req(/remoteAddress/,'MISSING_ACTUAL_SOCKET_REMOTE_ADDRESS');
-req(/REMOTE_ADDRESS_MISMATCH|PINNED_IP_REMOTE_MISMATCH|CONNECTED_IP_MISMATCH/,'MISSING_FAIL_CLOSED_REMOTE_ADDRESS_MATCH');
-req(/dns_answer|dns_set|resolved_ips|validated_ips/i,'MISSING_DNS_ANSWER_SET_EVIDENCE');
+req(/remoteFamily/,'MISSING_ACTUAL_SOCKET_REMOTE_FAMILY');
+req(/PINNED_IP_REMOTE_MISMATCH|REMOTE_ADDRESS_MISMATCH|CONNECTED_IP_MISMATCH/,'MISSING_FAIL_CLOSED_REMOTE_ADDRESS_MATCH');
+req(/canonicalIp\([^)]*remoteAddress[^)]*\).*===.*canonicalIp\([^)]*(selected_ip|selectedIp|chosenIp)/s,'MISSING_EXPLICIT_REMOTE_TO_SELECTED_EQUALITY');
+req(/dns_answer_set|validated_ips|resolved_ips/i,'MISSING_DNS_ANSWER_SET_EVIDENCE');
 req(/selected_ip|pinned_ip|chosen_ip/i,'MISSING_SELECTED_PINNED_IP_EVIDENCE');
-req(/redirect.*dns|dns.*redirect/i,'MISSING_REDIRECT_DNS_EVIDENCE_BINDING');
+req(/transport_legs|transportLegs/,'MISSING_PER_LEG_TRANSPORT_EVIDENCE');
+req(/remote_address_matches_selected/,'MISSING_PER_LEG_REMOTE_MATCH_ATTESTATION');
+req(/redirect.*(fresh|two-read|stable|dns)|stablePublicDns\(current\.hostname\)/is,'MISSING_REDIRECT_DNS_REVALIDATION');
+req(/general_production_network_authorized\s*:\s*false/,'MISSING_GENERAL_NETWORK_FALSE_EVIDENCE');
 
 if(failures.length){
   console.error(JSON.stringify({ok:false,promotion_blocked:true,failures},null,2));
   process.exit(1);
 }
 console.log(JSON.stringify({ok:true,promotion_blocked:false,checks:[
-  'actual socket remoteAddress is captured',
-  'actual remoteAddress must equal selected validated IP',
-  'DNS answer set is persisted as runtime evidence',
-  'selected pinned IP is persisted as runtime evidence',
-  'redirect DNS evidence is bound per followed leg'
+  'actual socket remoteAddress and remoteFamily are captured',
+  'actual remoteAddress must explicitly equal the selected validated IP',
+  'DNS answer set and selected pinned IP are persisted per transport leg',
+  'per-leg remote-address match attestation is persisted',
+  'followed redirect legs repeat DNS revalidation and pinned-IP verification',
+  'general production network remains explicitly unauthorized'
 ]},null,2));
