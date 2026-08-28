@@ -1,11 +1,7 @@
 -- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
 -- Mission #18 runtime concurrency canary support.
--- Purpose: after the real Production atomic reservation function exists, prove simultaneous callers
--- produce exactly one winner WITHOUT touching the real proof lane, Owner Lockdown, grants, DNS or external network.
---
--- Evidence-hardening rule: the proof recorder NEVER accepts caller-supplied winners/losers/results or
--- a caller-supplied network-performed boolean. Each canary reserve call writes its own server-side attempt
--- row, and the recorder derives the result from those rows + the isolated canary state + live fail-closed state.
+-- Proves exactly-one-winner concurrency without touching real proof authority/DNS/network.
+-- Evidence is server-derived; callers cannot submit winners/losers/results/network flags.
 
 begin;
 
@@ -17,6 +13,7 @@ create table if not exists public.pm_internet_concurrency_canary_v1 (
   active_run_id uuid,
   updated_at timestamptz not null default now()
 );
+alter table public.pm_internet_concurrency_canary_v1 add column if not exists active_run_id uuid;
 
 insert into public.pm_internet_concurrency_canary_v1(canary_key,max_requests,request_count,winning_token,active_run_id)
 values ('MISSION18_ATOMIC_RESERVATION_CANARY',1,0,null,null)
@@ -53,91 +50,55 @@ grant select,insert on table public.pm_internet_concurrency_attempts_v1 to servi
 grant select,insert on table public.pm_internet_concurrency_proof_runs_v1 to service_role;
 
 create or replace function public.pm_internet_concurrency_canary_reset_v1(p_run_id uuid)
-returns jsonb
-language plpgsql
-security definer
-set search_path='public','pg_temp'
-as $$
+returns jsonb language plpgsql security definer set search_path='public','pg_temp' as $$
 begin
   if p_run_id is null then raise exception 'RUN_ID_REQUIRED'; end if;
   update public.pm_internet_concurrency_canary_v1
-  set request_count=0,winning_token=null,active_run_id=p_run_id,updated_at=now()
+    set request_count=0,winning_token=null,active_run_id=p_run_id,updated_at=now()
   where canary_key='MISSION18_ATOMIC_RESERVATION_CANARY';
   if not found then raise exception 'CANARY_ROW_MISSING'; end if;
   delete from public.pm_internet_concurrency_attempts_v1 where run_id=p_run_id;
   return jsonb_build_object('ok',true,'run_id',p_run_id,'canary_reset',true,'proof_network_request_performed',false,'production_authority_mutation',false);
-end;
-$$;
+end;$$;
 revoke all on function public.pm_internet_concurrency_canary_reset_v1(uuid) from public, anon, authenticated;
 grant execute on function public.pm_internet_concurrency_canary_reset_v1(uuid) to service_role;
 
 create or replace function public.pm_internet_concurrency_canary_reserve_v1(p_run_id uuid,p_request_token uuid)
-returns jsonb
-language plpgsql
-security definer
-set search_path='public','pg_temp'
-as $$
-declare
-  r public.pm_internet_concurrency_canary_v1%rowtype;
-  acquired boolean := false;
-  why text := 'CANARY_SLOT_UNAVAILABLE';
+returns jsonb language plpgsql security definer set search_path='public','pg_temp' as $$
+declare r public.pm_internet_concurrency_canary_v1%rowtype; acquired boolean:=false; why text:='CANARY_SLOT_UNAVAILABLE';
 begin
   if p_run_id is null or p_request_token is null then raise exception 'RUN_AND_REQUEST_TOKEN_REQUIRED'; end if;
-  if not exists(
-    select 1 from public.pm_internet_concurrency_canary_v1
-    where canary_key='MISSION18_ATOMIC_RESERVATION_CANARY' and active_run_id=p_run_id
-  ) then raise exception 'CANARY_RUN_NOT_ACTIVE'; end if;
+  if not exists(select 1 from public.pm_internet_concurrency_canary_v1 where canary_key='MISSION18_ATOMIC_RESERVATION_CANARY' and active_run_id=p_run_id)
+    then raise exception 'CANARY_RUN_NOT_ACTIVE'; end if;
 
   update public.pm_internet_concurrency_canary_v1
-  set request_count=request_count+1,winning_token=p_request_token,updated_at=now()
+    set request_count=request_count+1,winning_token=p_request_token,updated_at=now()
   where canary_key='MISSION18_ATOMIC_RESERVATION_CANARY'
-    and active_run_id=p_run_id
-    and request_count < max_requests
+    and active_run_id=p_run_id and request_count<max_requests
   returning * into r;
-
   if found then acquired:=true; why:='CANARY_SLOT_ACQUIRED'; end if;
 
-  insert into public.pm_internet_concurrency_attempts_v1(
-    run_id,request_token,acquired,reason,proof_network_request_performed
-  ) values (p_run_id,p_request_token,acquired,why,false);
+  insert into public.pm_internet_concurrency_attempts_v1(run_id,request_token,acquired,reason,proof_network_request_performed)
+  values(p_run_id,p_request_token,acquired,why,false);
 
-  if acquired then
-    return jsonb_build_object('ok',true,'acquired',true,'request_token',p_request_token,'request_count',r.request_count,'proof_network_request_performed',false);
-  end if;
-  return jsonb_build_object('ok',true,'acquired',false,'reason',why,'proof_network_request_performed',false);
-end;
-$$;
+  return jsonb_build_object('ok',true,'acquired',acquired,'reason',why,'request_token',p_request_token,
+    'request_count',case when acquired then r.request_count else null end,'proof_network_request_performed',false);
+end;$$;
 revoke all on function public.pm_internet_concurrency_canary_reserve_v1(uuid,uuid) from public, anon, authenticated;
 grant execute on function public.pm_internet_concurrency_canary_reserve_v1(uuid,uuid) to service_role;
 
 create or replace function public.pm_internet_record_concurrency_proof_v2(p_run_id uuid)
-returns jsonb
-language plpgsql
-security definer
-set search_path='public','pg_temp'
-as $$
+returns jsonb language plpgsql security definer set search_path='public','pg_temp' as $$
 declare
-  callers int;
-  winners int;
-  losers int;
-  canary_count int;
-  winning_token uuid;
-  attempt_winner uuid;
-  current_hash text;
-  src text;
-  compact text;
-  prod_atomic_shape boolean := false;
+  callers int; winners int; losers int; canary_count int; winning_token uuid; attempt_winner uuid;
+  current_hash text; src text; compact text; prod_atomic_shape boolean:=false;
   lane public.pm_internet_transport_proof_lane_v1%rowtype;
   ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
-  real_lane_pristine boolean := false;
-  owner_fail_closed boolean := false;
-  passed boolean := false;
+  real_lane_pristine boolean:=false; owner_fail_closed boolean:=false; passed boolean:=false;
 begin
   if p_run_id is null then raise exception 'RUN_ID_REQUIRED'; end if;
 
-  select count(*)::int,
-         count(*) filter (where acquired)::int,
-         min(request_token) filter (where acquired)
+  select count(*)::int,count(*) filter(where acquired)::int,min(request_token) filter(where acquired)
     into callers,winners,attempt_winner
   from public.pm_internet_concurrency_attempts_v1
   where run_id=p_run_id and proof_network_request_performed=false;
@@ -148,108 +109,63 @@ begin
   where canary_key='MISSION18_ATOMIC_RESERVATION_CANARY' and active_run_id=p_run_id;
   if not found then raise exception 'CANARY_RUN_STATE_MISSING'; end if;
 
-  if to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is null then
-    raise exception 'PRODUCTION_ATOMIC_RESERVATION_MISSING';
-  end if;
+  if to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is null
+    then raise exception 'PRODUCTION_ATOMIC_RESERVATION_MISSING'; end if;
   select pg_get_functiondef('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'::regprocedure) into src;
   select encode(digest(src,'sha256'),'hex') into current_hash;
-  compact:=regexp_replace(lower(src),E'\\s+','','g');
-  prod_atomic_shape := position('network_request_count=network_request_count+1' in compact)>0
-                       and position('network_request_count=0' in compact)>0
-                       and position('returning*intolane' in compact)>0
-                       and position("fixed_target_url='https://example.com/'" in compact)>0
-                       and position('max_requests=1' in compact)>0;
+  compact:=regexp_replace(lower(src),'[[:space:]]+','','g');
+  prod_atomic_shape:=
+    position('network_request_count=network_request_count+1' in compact)>0 and
+    position('network_request_count=0' in compact)>0 and
+    position('returning*intolane' in compact)>0 and
+    position($q$fixed_target_url='https://example.com/'$q$ in compact)>0 and
+    position('max_requests=1' in compact)>0;
 
-  select * into lane from public.pm_internet_transport_proof_lane_v1
-  where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF';
-  real_lane_pristine := found
-    and coalesce(lane.enabled,false)=false
-    and lane.fixed_target_url='https://example.com/'
-    and lane.max_requests=1
-    and lane.network_request_count=0
-    and coalesce(lane.proof_completed,false)=false;
+  select * into lane from public.pm_internet_transport_proof_lane_v1 where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF';
+  real_lane_pristine:=found and coalesce(lane.enabled,false)=false and lane.fixed_target_url='https://example.com/'
+    and lane.max_requests=1 and lane.network_request_count=0 and coalesce(lane.proof_completed,false)=false;
 
-  select * into ctl from public.pm_owner_internet_gateway_control_shadow_v1
-  where control_key='CONTROLLED_INTERNET_GATEWAY';
-  owner_fail_closed := found
-    and coalesce(ctl.owner_lockdown_active,false)=true
-    and coalesce(ctl.production_network_enabled,false)=false
-    and ctl.mode='SHADOW_ONLY';
+  select * into ctl from public.pm_owner_internet_gateway_control_shadow_v1 where control_key='CONTROLLED_INTERNET_GATEWAY';
+  owner_fail_closed:=found and coalesce(ctl.owner_lockdown_active,false)=true
+    and coalesce(ctl.production_network_enabled,false)=false and ctl.mode='SHADOW_ONLY';
 
-  passed := callers>=2
-    and winners=1
-    and losers=callers-1
-    and canary_count=1
-    and winning_token is not distinct from attempt_winner
-    and prod_atomic_shape
-    and real_lane_pristine
-    and owner_fail_closed;
+  passed:=callers>=2 and winners=1 and losers=callers-1 and canary_count=1
+    and winning_token is not distinct from attempt_winner and prod_atomic_shape and real_lane_pristine and owner_fail_closed;
 
   insert into public.pm_internet_concurrency_proof_runs_v1(
-    run_id,callers,winners,losers,proof_network_request_performed,passed,reservation_function_sha256,atomic_pattern_version,evidence
-  ) values (
-    p_run_id,callers,winners,losers,false,passed,current_hash,'UPDATE_SINGLE_ROW_COUNT_LT_MAX_V2_SERVER_DERIVED',
-    jsonb_build_object(
-      'attempts_source','SERVER_SIDE_ATTEMPT_LEDGER',
-      'caller_supplied_results_accepted',false,
-      'caller_supplied_network_flag_accepted',false,
-      'canary_request_count',canary_count,
-      'canary_winning_token',winning_token,
-      'attempt_winning_token',attempt_winner,
-      'production_reservation_atomic_shape_verified',prod_atomic_shape,
-      'real_proof_lane_pristine',real_lane_pristine,
-      'owner_fail_closed',owner_fail_closed,
-      'real_proof_lane_touched',false,
-      'owner_lockdown_touched',false,
-      'grant_created',false,
-      'dns_performed',false,
-      'external_network_performed',false,
-      'atomic_pattern_version','UPDATE_SINGLE_ROW_COUNT_LT_MAX_V2_SERVER_DERIVED'
-    )
-  );
+    run_id,callers,winners,losers,proof_network_request_performed,passed,reservation_function_sha256,atomic_pattern_version,evidence)
+  values(p_run_id,callers,winners,losers,false,passed,current_hash,'UPDATE_SINGLE_ROW_COUNT_LT_MAX_V2_SERVER_DERIVED',jsonb_build_object(
+    'attempts_source','SERVER_SIDE_ATTEMPT_LEDGER','caller_supplied_results_accepted',false,
+    'caller_supplied_network_flag_accepted',false,'canary_request_count',canary_count,
+    'canary_winning_token',winning_token,'attempt_winning_token',attempt_winner,
+    'production_reservation_atomic_shape_verified',prod_atomic_shape,'real_proof_lane_pristine',real_lane_pristine,
+    'owner_fail_closed',owner_fail_closed,'real_proof_lane_touched',false,'owner_lockdown_touched',false,
+    'grant_created',false,'dns_performed',false,'external_network_performed',false));
 
-  return jsonb_build_object(
-    'ok',true,'passed',passed,'callers',callers,'winners',winners,'losers',losers,
+  return jsonb_build_object('ok',true,'passed',passed,'callers',callers,'winners',winners,'losers',losers,
     'proof_network_request_performed',false,'reservation_function_sha256',current_hash,
-    'production_reservation_atomic_shape_verified',prod_atomic_shape,
-    'real_proof_lane_pristine',real_lane_pristine,'owner_fail_closed',owner_fail_closed,
-    'evidence_server_derived',true
-  );
-end;
-$$;
+    'production_reservation_atomic_shape_verified',prod_atomic_shape,'real_proof_lane_pristine',real_lane_pristine,
+    'owner_fail_closed',owner_fail_closed,'evidence_server_derived',true);
+end;$$;
 revoke all on function public.pm_internet_record_concurrency_proof_v2(uuid) from public, anon, authenticated;
 grant execute on function public.pm_internet_record_concurrency_proof_v2(uuid) to service_role;
 
 create or replace function public.pm_internet_proof_lane_concurrency_readiness_v1()
-returns jsonb
-language plpgsql
-stable
-set search_path='public','pg_temp'
-as $$
+returns jsonb language plpgsql stable set search_path='public','pg_temp' as $$
 declare
-  lane public.pm_internet_transport_proof_lane_v1%rowtype;
-  shadow jsonb;
-  failure_policy jsonb;
-  prod_consume_exists boolean := false;
-  current_hash text;
-  run record;
-  runtime_pass boolean := false;
+  lane public.pm_internet_transport_proof_lane_v1%rowtype; shadow jsonb; failure_policy jsonb;
+  prod_consume_exists boolean:=false; current_hash text; run record; runtime_pass boolean:=false;
 begin
   select * into lane from public.pm_internet_transport_proof_lane_v1 where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF';
   shadow:=public.pm_internet_atomic_reservation_shadow_regression_v1();
   failure_policy:=public.pm_internet_failed_request_slot_policy_shadow_regression_v1();
-
   prod_consume_exists:=to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is not null;
+
   if prod_consume_exists then
     select encode(digest(pg_get_functiondef('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'::regprocedure),'sha256'),'hex') into current_hash;
-    select * into run
-    from public.pm_internet_concurrency_proof_runs_v1
-    where passed=true
-      and proof_network_request_performed=false
-      and winners=1
-      and losers=callers-1
-      and reservation_function_sha256=current_hash
-      and evidence->>'attempts_source'='SERVER_SIDE_ATTEMPT_LEDGER'
+    select * into run from public.pm_internet_concurrency_proof_runs_v1
+    where passed=true and proof_network_request_performed=false and winners=1 and losers=callers-1
+      and reservation_function_sha256=current_hash and evidence->>'attempts_source'='SERVER_SIDE_ATTEMPT_LEDGER'
       and coalesce((evidence->>'caller_supplied_results_accepted')::boolean,true)=false
       and coalesce((evidence->>'caller_supplied_network_flag_accepted')::boolean,true)=false
       and coalesce((evidence->>'production_reservation_atomic_shape_verified')::boolean,false)=true
@@ -260,48 +176,34 @@ begin
   end if;
 
   return jsonb_build_object(
-    'passed',coalesce((shadow->>'passed')::boolean,false)
-             and coalesce((failure_policy->>'passed')::boolean,false)
-             and prod_consume_exists and runtime_pass,
+    'passed',coalesce((shadow->>'passed')::boolean,false) and coalesce((failure_policy->>'passed')::boolean,false)
+      and prod_consume_exists and runtime_pass,
     'reason',case
       when not coalesce((shadow->>'passed')::boolean,false) then 'SHADOW_ATOMIC_PATTERN_REGRESSION_FAILED'
       when not coalesce((failure_policy->>'passed')::boolean,false) then 'FAILED_REQUEST_SLOT_POLICY_REGRESSION_FAILED'
       when not prod_consume_exists then 'PRODUCTION_ATOMIC_CONSUME_NOT_IMPLEMENTED'
       when not runtime_pass then 'RUNTIME_CONCURRENCY_TEST_PENDING_STALE_OR_UNTRUSTED'
-      else 'RUNTIME_CONCURRENCY_EXACTLY_ONE_WINNER_SERVER_DERIVED_VERIFIED'
-    end,
+      else 'RUNTIME_CONCURRENCY_EXACTLY_ONE_WINNER_SERVER_DERIVED_VERIFIED' end,
     'shadow_atomic_pattern_verified',coalesce((shadow->>'passed')::boolean,false),
     'failed_request_slot_policy_verified',coalesce((failure_policy->>'passed')::boolean,false),
-    'failed_request_slot_policy',failure_policy->>'policy',
-    'production_atomic_consume_present',prod_consume_exists,
-    'runtime_concurrency_test_required',true,
-    'runtime_concurrency_test_passed',runtime_pass,
-    'runtime_evidence_server_derived',runtime_pass,
-    'runtime_evidence_bound_to_current_reservation_sha256',runtime_pass,
-    'reservation_function_sha256',current_hash,
-    'lane_enabled',coalesce(lane.enabled,false),
-    'max_requests',coalesce(lane.max_requests,0),
-    'network_request_count',coalesce(lane.network_request_count,0),
-    'requires_unique_request_token',true,
-    'requires_idempotent_finalize',true,
-    'retry_requires_new_review_or_owner_approval',true,
-    'authority_expansion',false,
-    'production_mutation',false,
-    'network_request_performed',false
-  );
-end;
-$$;
+    'failed_request_slot_policy',failure_policy->>'policy','production_atomic_consume_present',prod_consume_exists,
+    'runtime_concurrency_test_required',true,'runtime_concurrency_test_passed',runtime_pass,
+    'runtime_evidence_server_derived',runtime_pass,'runtime_evidence_bound_to_current_reservation_sha256',runtime_pass,
+    'reservation_function_sha256',current_hash,'lane_enabled',coalesce(lane.enabled,false),
+    'max_requests',coalesce(lane.max_requests,0),'network_request_count',coalesce(lane.network_request_count,0),
+    'requires_unique_request_token',true,'requires_idempotent_finalize',true,
+    'retry_requires_new_review_or_owner_approval',true,'authority_expansion',false,'production_mutation',false,
+    'network_request_performed',false);
+end;$$;
 revoke all on function public.pm_internet_proof_lane_concurrency_readiness_v1() from public, anon, authenticated;
 grant execute on function public.pm_internet_proof_lane_concurrency_readiness_v1() to service_role;
 
 commit;
 
--- Runtime harness requirements after apply:
--- * Run only after Stabilization Exit and Production pm_internet_transport_proof_reserve_request_v1 exists.
--- * Reset only the isolated canary with a fresh run id, then issue >=2 simultaneous canary reserve calls with distinct tokens.
--- * Every reserve call must persist its own server-side attempt row.
--- * Record through pm_internet_record_concurrency_proof_v2(run_id); no caller-provided results/network boolean are accepted.
--- * Require exactly one winner, all others losers, canary_count=1, winning-token agreement, and proof_network_request_performed=false.
--- * Verify the real proof lane remains enabled=false/network_request_count=0 and Owner Lockdown remains true.
--- * Verify the Production reservation function has the expected conditional atomic-update shape and bind evidence to its SHA-256.
--- * If Production reservation function changes later, SHA binding automatically invalidates the prior concurrency evidence.
+-- Runtime requirements after apply:
+-- * Stabilization Exit verified; Production atomic reservation exists and has passed contract/authority checks.
+-- * Run temporary operator-authenticated harness only; real proof lane stays disabled/count=0 and Owner Lockdown=true.
+-- * Fresh run id, >=2 simultaneous distinct tokens; every call writes a server-side attempt row.
+-- * Recorder v2 accepts only run_id; exactly one winner required; no caller-supplied results/network boolean.
+-- * Production reservation atomic shape + exact target/max=1 are statically checked and evidence is bound to its SHA-256.
+-- * Any reservation-function change invalidates prior runtime concurrency evidence.
