@@ -10,11 +10,11 @@ on:
       expected_object_count:
         description: Expected object count from live evidence
         required: true
-        default: '712'
+        default: '714'
       expected_total_bytes:
         description: Expected total bytes from live evidence
         required: true
-        default: '769369808'
+        default: '770625696'
 
 permissions:
   contents: read
