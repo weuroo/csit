@@ -1,0 +1,21 @@
+// PRE-STAGED ONLY. DO NOT RUN AS A DEPLOYMENT DURING FEATURE FREEZE.
+// Blocks proof-executor promotion unless an independent authority-reducing cleanup path is wired.
+import fs from 'node:fs';
+const p='deployments/mission18-internet-fast-path/proof_executor_candidate.ts.disabled';
+const s=fs.readFileSync(p,'utf8');
+const required=[
+  "pm_internet_transport_proof_emergency_relock_v1",
+  "cleanup_verified",
+  "retryRequiresFreshReviewAndOwnerApproval"
+];
+const missing=required.filter(x=>!s.includes(x));
+if(missing.length){
+  console.error('MISSION18_EMERGENCY_RELOCK_WIRING_BLOCKED', {missing});
+  process.exit(1);
+}
+// Normal finalize failure must not be silently swallowed.
+if(/catch\s*\{\s*\}/.test(s) || /catch\s*\([^)]*\)\s*\{\s*\}/.test(s)){
+  console.error('MISSION18_SILENT_CLEANUP_FAILURE_FORBIDDEN');
+  process.exit(1);
+}
+console.log('MISSION18_EMERGENCY_RELOCK_STATIC_PASS');
