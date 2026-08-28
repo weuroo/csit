@@ -2,6 +2,7 @@
 
 Status: PREVIEW ONLY / ADDITIVE / NO PRODUCTION REPLACEMENT
 Date: 2026-08-28
+Trigger: Cloudflare Git build requested after branch-control update.
 
 ## Purpose
 Isolated Cloudflare Pages target for testing Paojai Living World UX v2 without modifying the current Vercel production project or the existing `deployments/paojai-living-world/index.html`.
