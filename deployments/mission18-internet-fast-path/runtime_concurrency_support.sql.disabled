@@ -52,8 +52,6 @@ grant select,insert,update on table public.pm_internet_concurrency_canary_v1 to 
 grant select,insert on table public.pm_internet_concurrency_attempts_v1 to service_role;
 grant select,insert on table public.pm_internet_concurrency_proof_runs_v1 to service_role;
 
--- Reset only the isolated canary and bind it to a fresh server-generated harness run id.
--- Never touches CONTROLLED_INTERNET_TRANSPORT_PROOF.
 create or replace function public.pm_internet_concurrency_canary_reset_v1(p_run_id uuid)
 returns jsonb
 language plpgsql
@@ -73,8 +71,6 @@ $$;
 revoke all on function public.pm_internet_concurrency_canary_reset_v1(uuid) from public, anon, authenticated;
 grant execute on function public.pm_internet_concurrency_canary_reset_v1(uuid) to service_role;
 
--- Atomic canary reservation: same single-row conditional UPDATE primitive used by the real proof reservation.
--- Each caller records its own outcome server-side so the later recorder cannot be fed fabricated result JSON.
 create or replace function public.pm_internet_concurrency_canary_reserve_v1(p_run_id uuid,p_request_token uuid)
 returns jsonb
 language plpgsql
@@ -114,8 +110,6 @@ $$;
 revoke all on function public.pm_internet_concurrency_canary_reserve_v1(uuid,uuid) from public, anon, authenticated;
 grant execute on function public.pm_internet_concurrency_canary_reserve_v1(uuid,uuid) to service_role;
 
--- Record a completed simultaneous-caller run from SERVER-DERIVED evidence only.
--- No p_results and no p_proof_network_request_performed input exists.
 create or replace function public.pm_internet_record_concurrency_proof_v2(p_run_id uuid)
 returns jsonb
 language plpgsql
@@ -131,6 +125,7 @@ declare
   attempt_winner uuid;
   current_hash text;
   src text;
+  compact text;
   prod_atomic_shape boolean := false;
   lane public.pm_internet_transport_proof_lane_v1%rowtype;
   ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
@@ -158,9 +153,12 @@ begin
   end if;
   select pg_get_functiondef('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'::regprocedure) into src;
   select encode(digest(src,'sha256'),'hex') into current_hash;
-  prod_atomic_shape := position('network_request_count=network_request_count+1' in replace(src,' ',''))>0
-                       and position('network_request_count=0' in replace(src,' ',''))>0
-                       and position('returning*intolane' in lower(replace(src,' ','')))>0;
+  compact:=regexp_replace(lower(src),E'\\s+','','g');
+  prod_atomic_shape := position('network_request_count=network_request_count+1' in compact)>0
+                       and position('network_request_count=0' in compact)>0
+                       and position('returning*intolane' in compact)>0
+                       and position("fixed_target_url='https://example.com/'" in compact)>0
+                       and position('max_requests=1' in compact)>0;
 
   select * into lane from public.pm_internet_transport_proof_lane_v1
   where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF';
@@ -222,8 +220,6 @@ $$;
 revoke all on function public.pm_internet_record_concurrency_proof_v2(uuid) from public, anon, authenticated;
 grant execute on function public.pm_internet_record_concurrency_proof_v2(uuid) to service_role;
 
--- Read-only readiness. A direct canary run can close the gate only while it is bound to the exact
--- current Production reservation-function definition and was recorded from server-derived attempt evidence.
 create or replace function public.pm_internet_proof_lane_concurrency_readiness_v1()
 returns jsonb
 language plpgsql
@@ -240,10 +236,10 @@ declare
   runtime_pass boolean := false;
 begin
   select * into lane from public.pm_internet_transport_proof_lane_v1 where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF';
-  shadow := public.pm_internet_atomic_reservation_shadow_regression_v1();
-  failure_policy := public.pm_internet_failed_request_slot_policy_shadow_regression_v1();
+  shadow:=public.pm_internet_atomic_reservation_shadow_regression_v1();
+  failure_policy:=public.pm_internet_failed_request_slot_policy_shadow_regression_v1();
 
-  prod_consume_exists := to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is not null;
+  prod_consume_exists:=to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is not null;
   if prod_consume_exists then
     select encode(digest(pg_get_functiondef('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'::regprocedure),'sha256'),'hex') into current_hash;
     select * into run
@@ -264,10 +260,10 @@ begin
   end if;
 
   return jsonb_build_object(
-    'passed', coalesce((shadow->>'passed')::boolean,false)
-              and coalesce((failure_policy->>'passed')::boolean,false)
-              and prod_consume_exists and runtime_pass,
-    'reason', case
+    'passed',coalesce((shadow->>'passed')::boolean,false)
+             and coalesce((failure_policy->>'passed')::boolean,false)
+             and prod_consume_exists and runtime_pass,
+    'reason',case
       when not coalesce((shadow->>'passed')::boolean,false) then 'SHADOW_ATOMIC_PATTERN_REGRESSION_FAILED'
       when not coalesce((failure_policy->>'passed')::boolean,false) then 'FAILED_REQUEST_SLOT_POLICY_REGRESSION_FAILED'
       when not prod_consume_exists then 'PRODUCTION_ATOMIC_CONSUME_NOT_IMPLEMENTED'
