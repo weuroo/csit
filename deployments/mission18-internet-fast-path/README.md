@@ -22,16 +22,17 @@ Canonical proof target:
 7. Run canonical-name readiness + cross-binding verification.
 8. Require implementation contract validation + authority-surface regression.
 9. Promote only an attested proof executor artifact to `APPROVED_FOR_PILOT`; no general production network authority.
-10. Deploy a separate proof-only executor fixed to exact `https://example.com/`, one request maximum.
-11. Run the runtime concurrency harness as soon as Production atomic reservation exists; require exactly one winner and zero DNS/network side effect during the harness.
-12. Only after technical implementation is complete, Owner crypto-binding readiness passes, and all required gates pass, request fresh Owner Passkey approval using exact v3-or-later intent.
-13. Phase A: bounded Owner Lockdown release, scope `TRANSPORT_PROOF_SINGLE_REQUEST`, <=120 seconds, general production network remains false.
-14. Phase B: create exact-command-bound <=10-minute `PAOJAI_OPERATIONS_AI` / `PUBLIC_READ` grant.
-15. Atomically reserve the one request slot before DNS or any network side effect.
-16. Execute pinned-IP TLS proof to exact `https://example.com/`; same-host HTTPS redirects only if observed, max 3, timeout <=10s, response <=1 MiB.
-17. Collect direct DNS connect-time evidence and redirect revalidation evidence for every redirect actually followed; zero redirects must be recorded explicitly rather than fabricated as redirect evidence.
-18. Immediately finalize idempotently, relock, revoke/expire grant, then run Central/Action/Guardian + Authority + Contract + Concurrency/Failure Policy + Recovery/Kill-Switch checks.
-19. Complete only if Production evidence has exactly one consumed request, `network_request_performed=true`, a valid bounded response, DNS/redirect policy evidence passed, no Critical regression, zero active PAOJAI PUBLIC_READ grants, Owner Lockdown restored, general Production network false, and Recovery/Kill-Switch verified.
+10. Before deployment, run both static validators including `executor_runtime_authority_static_check.mjs.disabled`. The executor must re-assert the persisted VERIFIED Owner command + consumed nonce/gateway audit before every material transport leg and must reject unless exactly one active PAOJAI `PUBLIC_READ` grant exists globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, not beyond the unlock window, with the exact safe resource scope.
+11. Deploy a separate proof-only executor fixed to exact `https://example.com/`, one request maximum.
+12. Run the runtime concurrency harness as soon as Production atomic reservation exists; require exactly one winner and zero DNS/network side effect during the harness.
+13. Only after technical implementation is complete, Owner crypto-binding readiness passes, and all required gates pass, request fresh Owner Passkey approval using exact v3-or-later intent.
+14. Phase A: bounded Owner Lockdown release, scope `TRANSPORT_PROOF_SINGLE_REQUEST`, <=120 seconds, general production network remains false.
+15. Phase B: create exact-command-bound <=10-minute `PAOJAI_OPERATIONS_AI` / `PUBLIC_READ` grant.
+16. Atomically reserve the one request slot before DNS or any network side effect.
+17. Execute pinned-IP TLS proof to exact `https://example.com/`; same-host HTTPS redirects only if observed, max 3, timeout <=10s, response <=1 MiB.
+18. Collect direct DNS connect-time evidence and redirect revalidation evidence for every redirect actually followed; zero redirects must be recorded explicitly rather than fabricated as redirect evidence.
+19. Immediately finalize idempotently, relock, revoke/expire grant, then run Central/Action/Guardian + Authority + Contract + Concurrency/Failure Policy + Recovery/Kill-Switch checks.
+20. Complete only if Production evidence has exactly one consumed request, `network_request_performed=true`, a valid bounded response, DNS/redirect policy evidence passed, no Critical regression, zero active PAOJAI PUBLIC_READ grants, Owner Lockdown restored, general Production network false, and Recovery/Kill-Switch verified.
 
 ## Crypto-binding activation order
 
@@ -51,8 +52,9 @@ This PR MUST remain draft and unmerged while Feature Freeze is active. After Sta
 ## Fail-closed invariants
 
 - No caller-supplied `signature_verified` is authority.
-- Exact VERIFIED v3-or-later Owner command required for unlock and grant creation.
+- Exact VERIFIED v3-or-later Owner command required for unlock and grant creation, and executor re-validates persisted command authority before every material network leg.
 - Owner command must bind `TRANSPORT_PROOF_SINGLE_REQUEST`, exact `https://example.com/`, max one request, bounded unlock <=120 seconds, and general Production network false.
+- Exactly one active PAOJAI `PUBLIC_READ` grant may exist at proof time; any extra or broader active grant blocks transport.
 - No `anon`, `authenticated`, or `PUBLIC` EXECUTE on Mission #18 mutation functions.
 - No credentials, downloads, code execution, external side effects, protected-data egress, or cross-client context.
 - `production_network_enabled` remains false throughout the proof mission.
