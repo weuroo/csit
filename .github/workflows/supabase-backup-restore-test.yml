@@ -117,13 +117,20 @@ jobs:
           # this standalone image. Do not fabricate or modify reserved roles.
           echo "roles.sql integrity verified; managed-role replay intentionally skipped in isolated application restore."
 
-          # Production Supabase includes platform-owned schemas not always
-          # pre-created in the standalone image. vault is required by this dump.
-          docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
-            -c 'CREATE SCHEMA IF NOT EXISTS vault AUTHORIZATION postgres;'
+          # Production Supabase includes platform-owned schemas/metadata not
+          # always pre-created in the standalone image. These placeholders exist
+          # only inside this ephemeral verification container so application
+          # views that depend on them can be created and verified.
+          docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS vault AUTHORIZATION postgres;
+          CREATE SCHEMA IF NOT EXISTS supabase_migrations AUTHORIZATION postgres;
+          CREATE TABLE IF NOT EXISTS supabase_migrations.schema_migrations (
+            version text PRIMARY KEY
+          );
+          SQL
 
-          # Replay schema without ON_ERROR_STOP so we can classify platform-role
-          # mismatches. Only missing supabase_* role errors are tolerated.
+          # Replay schema without ON_ERROR_STOP only so platform-managed role
+          # mismatches can be classified. Application-object errors remain fatal.
           set +e
           docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres \
             < "$RESTORE_DIR/plain/schema.sql" \
@@ -145,6 +152,15 @@ jobs:
             exit 44
           else
             echo "schema.sql replay completed without errors."
+          fi
+
+          # The application health view that caused the prior restore failure
+          # must now exist; this proves the platform-metadata placeholder solved
+          # the dependency rather than hiding the application error.
+          VIEW_OK="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select case when to_regclass('public.pm_system_development_recorder_health_v1') is not null then 'present' else 'missing' end;" | tr -d '[:space:]')"
+          if [[ "$VIEW_OK" != "present" ]]; then
+            echo "::error::Application view pm_system_development_recorder_health_v1 is still missing after schema restore."
+            exit 45
           fi
 
           # Data restore remains strict/fail-closed.
