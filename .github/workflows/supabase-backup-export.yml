@@ -46,13 +46,12 @@ jobs:
               ;;
           esac
 
-      - name: Install Supabase CLI and age
+      - name: Install Supabase CLI
         shell: bash
         run: |
           set -euo pipefail
           npm install --global supabase@latest
-          sudo apt-get update -y
-          sudo apt-get install -y age
+          gpg --version >/dev/null
 
       - name: Export roles, schema, and data
         shell: bash
@@ -76,8 +75,8 @@ jobs:
           set -euo pipefail
           umask 077
           tar -C "$BACKUP_DIR/plain" -czf "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz" .
-          AGE_PASSPHRASE="$BACKUP_ENCRYPTION_PASSPHRASE" age --encrypt --passphrase --output "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.age" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
-          sha256sum "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.age" > "$BACKUP_DIR/ARTIFACT_SHA256SUMS"
+          printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --output "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.gpg" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
+          sha256sum "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz.gpg" > "$BACKUP_DIR/ARTIFACT_SHA256SUMS"
           rm -rf "$BACKUP_DIR/plain" "$BACKUP_DIR/supabase-${{ inputs.project_ref }}.tar.gz"
 
       - name: Upload encrypted artifact only
@@ -85,7 +84,7 @@ jobs:
         with:
           name: supabase-backup-${{ inputs.project_ref }}-${{ github.run_id }}
           path: |
-            backup-output/supabase-${{ inputs.project_ref }}.tar.gz.age
+            backup-output/supabase-${{ inputs.project_ref }}.tar.gz.gpg
             backup-output/ARTIFACT_SHA256SUMS
           if-no-files-found: error
           retention-days: 3
