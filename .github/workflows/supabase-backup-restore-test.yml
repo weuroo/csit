@@ -77,10 +77,14 @@ jobs:
           for f in roles.sql schema.sql data.sql SHA256SUMS MANIFEST.txt; do
             test -s "$RESTORE_DIR/plain/$f" || { echo "::error::Missing or empty $f"; exit 31; }
           done
-          (
-            cd "$RESTORE_DIR/plain"
-            sha256sum -c SHA256SUMS
-          )
+          for f in roles.sql schema.sql data.sql; do
+            EXPECTED="$(awk -v f="$f" '$2 ~ ("/" f "$" ) {print $1; exit}' "$RESTORE_DIR/plain/SHA256SUMS")"
+            ACTUAL="$(sha256sum "$RESTORE_DIR/plain/$f" | awk '{print $1}')"
+            if [[ -z "$EXPECTED" || "$EXPECTED" != "$ACTUAL" ]]; then
+              echo "::error::Inner checksum mismatch for $f"
+              exit 32
+            fi
+          done
           echo "Inner dump-file checksums verified."
 
       - name: Start isolated Supabase Postgres container
