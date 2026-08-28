@@ -1,0 +1,114 @@
+name: GitHub Provider-Independent Backup (Fail-Closed)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BACKUP_DIR: github-backup-output
+
+jobs:
+  bundle-repository:
+    name: Encrypted full Git repository bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Safety gate — encryption secret required
+        shell: bash
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]]; then
+            echo "::error::Missing BACKUP_ENCRYPTION_PASSPHRASE. No repository backup was attempted."
+            exit 20
+          fi
+
+      - name: Checkout repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch every branch and tag explicitly
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+          mkdir -p "$BACKUP_DIR/plain"
+          git for-each-ref --format='%(refname) %(objectname)' refs/remotes/origin refs/tags | sort > "$BACKUP_DIR/plain/REFS.txt"
+          BRANCH_COUNT="$(git for-each-ref --format='%(refname)' refs/remotes/origin | grep -v '/HEAD$' | wc -l | tr -d ' ')"
+          TAG_COUNT="$(git for-each-ref --format='%(refname)' refs/tags | wc -l | tr -d ' ')"
+          COMMIT_COUNT="$(git rev-list --all --count)"
+          printf 'branches=%s\ntags=%s\nreachable_commits=%s\ncreated_utc=%s\n' \
+            "$BRANCH_COUNT" "$TAG_COUNT" "$COMMIT_COUNT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BACKUP_DIR/plain/BACKUP_METADATA.txt"
+          echo "Captured refs: branches=$BRANCH_COUNT tags=$TAG_COUNT reachable_commits=$COMMIT_COUNT"
+
+      - name: Create and verify provider-independent git bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          git bundle create "$BACKUP_DIR/plain/csit-all-refs.bundle" --all
+          git bundle verify "$BACKUP_DIR/plain/csit-all-refs.bundle"
+          git bundle list-heads "$BACKUP_DIR/plain/csit-all-refs.bundle" > "$BACKUP_DIR/plain/BUNDLE_HEADS.txt"
+          test -s "$BACKUP_DIR/plain/csit-all-refs.bundle"
+          test -s "$BACKUP_DIR/plain/BUNDLE_HEADS.txt"
+
+      - name: Isolated clone verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/csit-restore-test.git
+          git clone --mirror "$BACKUP_DIR/plain/csit-all-refs.bundle" /tmp/csit-restore-test.git
+          git --git-dir=/tmp/csit-restore-test.git fsck --full --no-dangling
+          BUNDLE_HEAD_COUNT="$(wc -l < "$BACKUP_DIR/plain/BUNDLE_HEADS.txt" | tr -d ' ')"
+          RESTORED_REF_COUNT="$(git --git-dir=/tmp/csit-restore-test.git for-each-ref --format='%(refname)' | wc -l | tr -d ' ')"
+          if [[ "$RESTORED_REF_COUNT" -lt "$BUNDLE_HEAD_COUNT" ]]; then
+            echo "::error::Restored ref count is lower than bundle head count: restored=$RESTORED_REF_COUNT bundle=$BUNDLE_HEAD_COUNT"
+            exit 30
+          fi
+          echo "Isolated clone verification passed: bundle_heads=$BUNDLE_HEAD_COUNT restored_refs=$RESTORED_REF_COUNT"
+
+      - name: Create plaintext checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd "$BACKUP_DIR/plain"
+            sha256sum csit-all-refs.bundle REFS.txt BUNDLE_HEADS.txt BACKUP_METADATA.txt > SHA256SUMS
+          )
+
+      - name: Encrypt repository backup bundle
+        shell: bash
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          tar -C "$BACKUP_DIR/plain" -czf "$BACKUP_DIR/csit-provider-independent-backup.tar.gz" .
+          printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 \
+            --output "$BACKUP_DIR/csit-provider-independent-backup.tar.gz.gpg" "$BACKUP_DIR/csit-provider-independent-backup.tar.gz"
+          sha256sum "$BACKUP_DIR/csit-provider-independent-backup.tar.gz.gpg" > "$BACKUP_DIR/ARTIFACT_SHA256SUMS"
+          rm -rf "$BACKUP_DIR/plain" "$BACKUP_DIR/csit-provider-independent-backup.tar.gz" /tmp/csit-restore-test.git
+
+      - name: Upload encrypted repository artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-provider-independent-csit-${{ github.run_id }}
+          path: |
+            github-backup-output/csit-provider-independent-backup.tar.gz.gpg
+            github-backup-output/ARTIFACT_SHA256SUMS
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+      - name: Confirm no plaintext remains
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -d "$BACKUP_DIR/plain"
+          test ! -f "$BACKUP_DIR/csit-provider-independent-backup.tar.gz"
+          test ! -d /tmp/csit-restore-test.git
+          echo "Encrypted provider-independent Git repository artifact created; plaintext removed."
