@@ -11,7 +11,7 @@ Canonical proof target:
 
 1. Confirm Stabilization Exit and all safety regressions pass.
 2. Re-read current Operating Manual + live schema; rebase/update this package if state changed.
-3. Resolve Owner crypto binding BEFORE any transport authority work: review/apply the crypto-bound gateway v2 package, require independently derived consumed WebAuthn evidence, deploy/review Owner approval Edge v5+ that never sends caller-supplied `signature_verified`, and require `pm_owner_gateway_crypto_binding_readiness_v1()` or its reviewed successor to pass.
+3. Resolve Owner crypto binding BEFORE any transport authority work: review/apply the crypto-bound gateway v2 package, require independently derived consumed WebAuthn evidence, deploy/review Owner approval Edge v5+ that never sends caller-supplied `signature_verified`, and require reviewed crypto/exact-payload readiness to pass.
 4. Confirm the Production proof lane remains hard-bound to exact `https://example.com/`; no PM-owned redirect target, alias, wildcard, fallback, or caller-selected URL is allowed.
 5. Apply the reviewed schema-bound SQL package implementing only:
    - `pm_internet_transport_proof_bounded_unlock_v1`
@@ -22,10 +22,10 @@ Canonical proof target:
 7. Run canonical-name readiness + cross-binding verification.
 8. Require implementation contract validation + authority-surface regression.
 9. Promote only an attested proof executor artifact to `APPROVED_FOR_PILOT`; no general production network authority.
-10. Before deployment, run both static validators including `executor_runtime_authority_static_check.mjs.disabled`. The executor must re-assert the persisted VERIFIED Owner command + consumed nonce/gateway audit before every material transport leg and must reject unless exactly one active PAOJAI `PUBLIC_READ` grant exists globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, not beyond the unlock window, with the exact safe resource scope.
+10. Before deployment, run static validators including `predeploy_static_validation.mjs.disabled` and `executor_runtime_authority_static_check.mjs.disabled`. The executor must re-assert persisted VERIFIED Owner command + consumed nonce/gateway audit before every material transport leg and reject unless exactly one active PAOJAI `PUBLIC_READ` grant exists globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, within unlock expiry, with the exact safe resource scope.
 11. Deploy a separate proof-only executor fixed to exact `https://example.com/`, one request maximum.
-12. Run the runtime concurrency harness as soon as Production atomic reservation exists; require exactly one winner and zero DNS/network side effect during the harness.
-13. Only after technical implementation is complete, Owner crypto-binding readiness passes, and all required gates pass, request fresh Owner Passkey approval using exact v3-or-later intent.
+12. As soon as Production atomic reservation exists, apply/review `runtime_concurrency_support.sql.disabled`, deploy the temporary operator-authenticated `runtime_concurrency_harness.ts.disabled`, and run `runtime_concurrency_static_check.mjs.disabled` before execution. Runtime evidence must be SERVER-DERIVED: each simultaneous reserve call writes its own attempt row; recorder v2 accepts only `run_id` and cannot accept caller-supplied winners/losers/results/network flags. Require exactly one winner, current reservation-function SHA binding, expected atomic update shape, real proof lane pristine, Owner Lockdown true, and zero DNS/external proof-network side effect.
+13. Only after technical implementation is complete, Owner crypto/exact-payload readiness passes, and all required gates pass, request fresh Owner Passkey approval using exact v3-or-later intent.
 14. Phase A: bounded Owner Lockdown release, scope `TRANSPORT_PROOF_SINGLE_REQUEST`, <=120 seconds, general production network remains false.
 15. Phase B: create exact-command-bound <=10-minute `PAOJAI_OPERATIONS_AI` / `PUBLIC_READ` grant.
 16. Atomically reserve the one request slot before DNS or any network side effect.
@@ -41,9 +41,10 @@ The crypto-prep artifacts are intentionally disabled. Activation order after liv
 1. `owner_gateway_crypto_binding_patch.sql.disabled` — create service-role-only gateway v2 with no caller signature boolean.
 2. Apply all hardening findings in `crypto_binding_review_2026-08-28.md`: require exact trusted credential, persisted `evidence.verified=true`, consumed evidence, freshness, exact owner/device/nonce/payload hash/intent/origin/RP binding.
 3. `approval_edge_v5_crypto_bound.ts.disabled` — server-side WebAuthn verification and authority handoff only to gateway v2; approval-only, no grant/unlock/lane/network mutation.
-4. `schema_bound_candidate.sql.disabled` — technical transport controls after crypto binding is safe.
-5. `crypto_bound_command_helper_patch.sql.disabled` — force all transport controls to accept only the crypto-bound v2 audit semantics.
-6. Re-run Owner crypto-binding readiness, contract validation, Authority Surface, Central/Action/Guardian, concurrency/failure-policy and Recovery/Kill-Switch before Owner Passkey is surfaced.
+4. `owner_gateway_exact_payload_binding_readiness.sql.disabled` — verify the actual gateway mismatch/reason checks rather than brittle equality-source strings; all canonical payload/resource scope authority fields must be independently enforced.
+5. `schema_bound_candidate.sql.disabled` — technical transport controls after crypto binding is safe.
+6. `crypto_bound_command_helper_patch.sql.disabled` — force all transport controls to accept only crypto-bound v2 audit semantics.
+7. Re-run Owner crypto/exact-payload readiness, contract validation, Authority Surface, Central/Action/Guardian, concurrency/failure-policy and Recovery/Kill-Switch before Owner Passkey is surfaced.
 
 ## Merge / activation gate
 
@@ -62,6 +63,8 @@ This PR MUST remain draft and unmerged while Feature Freeze is active. After Sta
 - A failed DNS/TLS/timeout/network attempt still consumes the one request slot; retry requires new review and fresh Owner approval/reset.
 - Approval endpoint itself never unlocks, creates grant, enables proof lane, or enables network.
 - Proof executor is separate from the general executor.
+- Runtime concurrency evidence must be server-derived from attempt rows; a caller-supplied result JSON or network boolean can never close the concurrency gate.
+- Concurrency evidence is stale immediately if the Production reservation-function SHA changes.
 - Shadow/readiness evidence never counts as Owner authority or real network proof.
 - No fallback target, aliases, wildcards, caller-supplied target URLs, or cross-host redirects.
 - Legacy gateway v1 audit semantics are never accepted as proof authority for Mission #18.
