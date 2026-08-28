@@ -120,34 +120,31 @@ Deno.serve(async(req:Request)=>{
     reservation=rr.data;reservationError=rr.error;
   }catch(e){reservationError=e}
 
-  // A lost/invalid reservation response is ambiguous: the DB may already have committed the consume.
-  // Fail closed, perform no DNS/network work, authority-reduce immediately, and require fresh Owner approval.
   if(reservationError||!reservation||typeof reservation.ok!=='boolean'){
     let cleanupVerified=false;
     try{const relock=await emergencyRelock(commandId,'RESERVATION_OUTCOME_AMBIGUOUS:'+String((reservationError as Error)?.message||reservationError||'MISSING_OR_MALFORMED_RESPONSE'));cleanupVerified=!!relock?.cleanup_verified}catch{cleanupVerified=false}
-    return reply(502,{ok:false,error:'RESERVATION_OUTCOME_AMBIGUOUS',networkRequestPerformed:false,slotConsumptionState:'UNKNOWN_FAIL_CLOSED',cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
+    return reply(502,{ok:false,error:'RESERVATION_OUTCOME_AMBIGUOUS',networkRequestPerformed:false,networkSideEffectPerformed:false,slotConsumptionState:'UNKNOWN_FAIL_CLOSED',cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
   }
 
-  // Any explicit reservation rejection/replay also relocks immediately. This is authority-reducing only;
-  // it never releases or reopens a consumed slot and prevents bounded unlock/grant authority lingering.
   if(reservation.ok!==true||reservation.duplicate===true||reservation.network_execution_allowed!==true){
     let cleanupVerified=false;
     try{const relock=await emergencyRelock(commandId,'RESERVATION_REJECTED_OR_REPLAYED:'+String(reservation.reason||'NETWORK_EXECUTION_NOT_ALLOWED'));cleanupVerified=!!relock?.cleanup_verified}catch{cleanupVerified=false}
-    return reply(423,{ok:false,error:reservation.reason||'PROOF_REQUEST_RESERVATION_FAILED_OR_REPLAYED',networkRequestPerformed:false,slotRemainsConsumed:reservation.slot_consumed===true,cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
+    return reply(423,{ok:false,error:reservation.reason||'PROOF_REQUEST_RESERVATION_FAILED_OR_REPLAYED',networkRequestPerformed:false,networkSideEffectPerformed:false,slotRemainsConsumed:reservation.slot_consumed===true,cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
   }
 
   const started=Date.now();
-  let redirectObserved=false,networkPerformed=false,current=new URL(TARGET),redirects=0;
+  let redirectObserved=false,networkSideEffectPerformed=false,networkRequestPerformed=false,current=new URL(TARGET),redirects=0;
   const transportLegs:LegEvidence[]=[];
   try{
     while(true){
       await assertProofWindow(commandId);
-      // DNS resolution is itself an external network side effect. Because the atomic slot is already consumed,
-      // account the proof attempt before the first DNS lookup so any DNS failure remains a consumed attempt.
-      networkPerformed=true;
+      // DNS resolution is an external network side effect. Mark it before the first post-reservation DNS lookup.
+      networkSideEffectPerformed=true;
       const dns=await stablePublicDns(current.hostname);
       await assertProofWindow(commandId);
       const remaining=MAX_TOTAL_MS-(Date.now()-started);
+      // Only now is the pinned TLS/HTTPS request about to begin.
+      networkRequestPerformed=true;
       const result=await pinnedGet(current,dns,remaining,transportLegs.length);
       transportLegs.push(result);
       if(result.status>=300&&result.status<400){
@@ -165,17 +162,17 @@ Deno.serve(async(req:Request)=>{
       const redirectSatisfied=!redirectObserved||transportLegs.length===redirects+1;
       if(!allPinned)throw new Error('PINNED_IP_RUNTIME_EVIDENCE_INCOMPLETE');
       if(!redirectSatisfied)throw new Error('REDIRECT_RUNTIME_EVIDENCE_INCOMPLETE');
-      const evidence={dns_connect_time_verified:allPinned,dns_runtime_evidence_passed:allPinned,redirect_policy_verified:true,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_revalidation_satisfied:redirectSatisfied,network_request_performed:networkPerformed,status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,transport_legs:transportLegs,general_production_network_authorized:false};
+      const evidence={dns_connect_time_verified:allPinned,dns_runtime_evidence_passed:allPinned,redirect_policy_verified:true,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_revalidation_satisfied:redirectSatisfied,network_side_effect_performed:networkSideEffectPerformed,network_request_performed:networkRequestPerformed,status:result.status,bytes:result.bytes,redirects,elapsed_ms:elapsedMs,transport:'PINNED_IP_TLS_HOSTNAME_VERIFIED',fixed_target_url:TARGET,transport_legs:transportLegs,general_production_network_authorized:false};
       let fin:any;
-      try{fin=await finalize(requestToken,'SUCCESS',evidence)}catch(fe){const relock=await emergencyRelock(commandId,'FINALIZE_SUCCESS_FAILED:'+String((fe as Error).message||fe));return reply(502,{ok:false,error:'FINALIZE_FAILED_EMERGENCY_RELOCKED',networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,cleanup_verified:!!relock?.cleanup_verified,retryRequiresFreshReviewAndOwnerApproval:true})}
-      return reply(200,{ok:true,status:result.status,bytes:result.bytes,redirects,elapsedMs,networkRequestPerformed:networkPerformed,redirectObserved,proofCompleted:!!fin?.proof_completed});
+      try{fin=await finalize(requestToken,'SUCCESS',evidence)}catch(fe){const relock=await emergencyRelock(commandId,'FINALIZE_SUCCESS_FAILED:'+String((fe as Error).message||fe));return reply(502,{ok:false,error:'FINALIZE_FAILED_EMERGENCY_RELOCKED',networkRequestPerformed,networkSideEffectPerformed,slotRemainsConsumed:true,cleanup_verified:!!relock?.cleanup_verified,retryRequiresFreshReviewAndOwnerApproval:true})}
+      return reply(200,{ok:true,status:result.status,bytes:result.bytes,redirects,elapsedMs,networkRequestPerformed,networkSideEffectPerformed,redirectObserved,proofCompleted:!!fin?.proof_completed});
     }
   }catch(e){
     const allObservedPinned=transportLegs.length>0&&transportLegs.every(x=>x.remote_address_matches_selected&&canonicalIp(x.remote_address)===canonicalIp(x.selected_ip));
-    const evidence={dns_connect_time_verified:allObservedPinned,dns_runtime_evidence_passed:allObservedPinned,redirect_policy_verified:true,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_revalidation_satisfied:false,network_request_performed:networkPerformed,error:String((e as Error).message||e),redirects,elapsed_ms:Date.now()-started,fixed_target_url:TARGET,transport_legs:transportLegs,general_production_network_authorized:false};
+    const evidence={dns_connect_time_verified:allObservedPinned,dns_runtime_evidence_passed:allObservedPinned,redirect_policy_verified:true,redirect_observed:redirectObserved,redirect_revalidation_required:redirectObserved,redirect_revalidation_satisfied:false,network_side_effect_performed:networkSideEffectPerformed,network_request_performed:networkRequestPerformed,error:String((e as Error).message||e),redirects,elapsed_ms:Date.now()-started,fixed_target_url:TARGET,transport_legs:transportLegs,general_production_network_authorized:false};
     let cleanupVerified=false;
     try{await finalize(requestToken,'FAILED',evidence);cleanupVerified=true}catch(fe){try{const relock=await emergencyRelock(commandId,'FINALIZE_FAILED_AFTER_PROOF_ERROR:'+String((fe as Error).message||fe));cleanupVerified=!!relock?.cleanup_verified}catch{cleanupVerified=false}}
-    return reply(502,{ok:false,error:String((e as Error).message||e),networkRequestPerformed:networkPerformed,slotRemainsConsumed:true,cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
+    return reply(502,{ok:false,error:String((e as Error).message||e),networkRequestPerformed,networkSideEffectPerformed,slotRemainsConsumed:true,cleanup_verified:cleanupVerified,retryRequiresFreshReviewAndOwnerApproval:true});
   }
 });
 
@@ -188,9 +185,9 @@ Deno.serve(async(req:Request)=>{
 - Requires exactly one active PAOJAI PUBLIC_READ grant globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, not beyond the proof window, with exact safe resource flags.
 - For every network leg, persists validated DNS answers, selected pinned IP/family and actual socket remoteAddress/remoteFamily; transport fails closed unless actual remoteAddress equals selected IP.
 - Same-host HTTPS redirects are allowed up to 3 and each followed leg repeats fresh two-read DNS stability, selected-IP binding and actual remote-address verification; zero redirects are valid.
-- network_request_performed becomes true before the first post-reservation DNS lookup because DNS itself is an external network side effect; any DNS/transport failure still consumes the slot.
+- network_side_effect_performed becomes true before the first post-reservation DNS lookup; network_request_performed becomes true only immediately before pinned TLS/HTTPS transport. DNS-only failure therefore records side effect=true, request=false, while still consuming the slot.
 - Total proof timeout, including redirects, is <=10 seconds; response limit is 1 MiB.
-- Reservation replay is fail-closed before DNS/network and now authority-reduces via emergency relock.
+- Reservation replay is fail-closed before DNS/network and authority-reduces via emergency relock.
 - Reservation RPC error/missing/malformed response is RESERVATION_OUTCOME_AMBIGUOUS: no DNS/network, emergency relock required, slot state treated unknown/consumed-safe, and fresh review/Owner approval required.
 - Normal finalize is authoritative cleanup; if finalize fails after reservation, executor invokes independent emergency relock and requires cleanup_verified=true.
 - Emergency cleanup is authority-reducing only and never releases/reuses a consumed slot.
