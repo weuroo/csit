@@ -117,23 +117,30 @@ jobs:
           # this standalone image. Do not fabricate or modify reserved roles.
           echo "roles.sql integrity verified; managed-role replay intentionally skipped in isolated application restore."
 
-          # Production Supabase includes platform-owned schemas/metadata not
-          # always pre-created in the standalone image. These placeholders exist
-          # only inside this ephemeral verification container so application
-          # views that depend on them can be created and verified.
-          docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
-          CREATE SCHEMA IF NOT EXISTS vault AUTHORIZATION postgres;
-          CREATE SCHEMA IF NOT EXISTS supabase_migrations AUTHORIZATION postgres;
-          CREATE TABLE IF NOT EXISTS supabase_migrations.schema_migrations (
-            version text PRIMARY KEY
-          );
-          SQL
+          # vault is a Supabase platform-owned schema used by the dump but is not
+          # always pre-created in the standalone verification image.
+          docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+            -c 'CREATE SCHEMA IF NOT EXISTS vault AUTHORIZATION postgres;'
+
+          # schema.sql may drop/reset supabase_migrations before the application
+          # health view is created. Build an ephemeral replay copy that injects
+          # the minimum platform metadata dependency immediately before that VIEW.
+          awk '
+            BEGIN { injected=0 }
+            !injected && $0 ~ /^CREATE .*VIEW .*pm_system_development_recorder_health_v1/ {
+              print "CREATE SCHEMA IF NOT EXISTS supabase_migrations AUTHORIZATION postgres;"
+              print "CREATE TABLE IF NOT EXISTS supabase_migrations.schema_migrations (version text PRIMARY KEY);"
+              injected=1
+            }
+            { print }
+            END { if (!injected) exit 46 }
+          ' "$RESTORE_DIR/plain/schema.sql" > "$RESTORE_DIR/schema-isolated.sql"
 
           # Replay schema without ON_ERROR_STOP only so platform-managed role
           # mismatches can be classified. Application-object errors remain fatal.
           set +e
           docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres \
-            < "$RESTORE_DIR/plain/schema.sql" \
+            < "$RESTORE_DIR/schema-isolated.sql" \
             > "$RESTORE_DIR/schema-restore.log" 2>&1
           SCHEMA_RC=$?
           set -e
@@ -154,9 +161,6 @@ jobs:
             echo "schema.sql replay completed without errors."
           fi
 
-          # The application health view that caused the prior restore failure
-          # must now exist; this proves the platform-metadata placeholder solved
-          # the dependency rather than hiding the application error.
           VIEW_OK="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select case when to_regclass('public.pm_system_development_recorder_health_v1') is not null then 'present' else 'missing' end;" | tr -d '[:space:]')"
           if [[ "$VIEW_OK" != "present" ]]; then
             echo "::error::Application view pm_system_development_recorder_health_v1 is still missing after schema restore."
@@ -185,6 +189,11 @@ jobs:
           if [[ "$KEY_TABLE" != "present" ]]; then
             echo "::error::Key operational table pm_observability_incidents is missing after restore."
             exit 51
+          fi
+          KEY_VIEW="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select case when to_regclass('public.pm_system_development_recorder_health_v1') is not null then 'present' else 'missing' end;" | tr -d '[:space:]')"
+          if [[ "$KEY_VIEW" != "present" ]]; then
+            echo "::error::Key application view pm_system_development_recorder_health_v1 is missing after restore."
+            exit 52
           fi
           echo "APPLICATION_RESTORE_VERIFIED: encrypted backup restored application schema/data with expected public schema evidence."
           echo "NOTE: Supabase control-plane managed roles are integrity-checked in roles.sql but are not recreated by this isolated lane."
