@@ -1,0 +1,145 @@
+name: Supabase Backup Restore Test (Isolated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: Successful backup workflow run ID
+        required: true
+        default: '33174971681'
+      expected_public_tables:
+        description: Expected public base-table count from backup evidence
+        required: true
+        default: '710'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  restore-test:
+    name: Isolated restore verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PROJECT_REF: bvnmwfhqgdevupvcqqyl
+      RESTORE_DIR: restore-work
+      DB_CONTAINER: supabase-backup-restore-db
+    steps:
+      - name: Safety gate — encryption secret
+        shell: bash
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]]; then
+            echo "::error::Missing BACKUP_ENCRYPTION_PASSPHRASE. Restore test not attempted."
+            exit 20
+          fi
+
+      - name: Download encrypted backup artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: supabase-backup-${{ env.PROJECT_REF }}-${{ inputs.artifact_run_id }}
+          path: restore-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.artifact_run_id }}
+
+      - name: Verify encrypted artifact integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENC="restore-artifact/supabase-${PROJECT_REF}.tar.gz.gpg"
+          SUMS="restore-artifact/ARTIFACT_SHA256SUMS"
+          test -s "$ENC"
+          test -s "$SUMS"
+          EXPECTED="$(awk 'NR==1{print $1}' "$SUMS")"
+          ACTUAL="$(sha256sum "$ENC" | awk '{print $1}')"
+          if [[ "$EXPECTED" != "$ACTUAL" ]]; then
+            echo "::error::Encrypted artifact checksum mismatch."
+            exit 30
+          fi
+          echo "Encrypted artifact checksum verified."
+
+      - name: Decrypt and inspect backup bundle
+        shell: bash
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RESTORE_DIR/plain"
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" \
+            --output "$RESTORE_DIR/backup.tar.gz" \
+            --decrypt "restore-artifact/supabase-${PROJECT_REF}.tar.gz.gpg"
+          tar -C "$RESTORE_DIR/plain" -xzf "$RESTORE_DIR/backup.tar.gz"
+          for f in roles.sql schema.sql data.sql SHA256SUMS MANIFEST.txt; do
+            test -s "$RESTORE_DIR/plain/$f" || { echo "::error::Missing or empty $f"; exit 31; }
+          done
+          (
+            cd "$RESTORE_DIR/plain"
+            sha256sum -c SHA256SUMS
+          )
+          echo "Inner dump-file checksums verified."
+
+      - name: Start isolated Supabase Postgres container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull public.ecr.aws/supabase/postgres:17.6.1.165
+          docker run -d --name "$DB_CONTAINER" \
+            -e POSTGRES_PASSWORD='restore-test-only' \
+            -e POSTGRES_DB='postgres' \
+            public.ecr.aws/supabase/postgres:17.6.1.165
+          for i in $(seq 1 90); do
+            if docker exec "$DB_CONTAINER" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+              echo "Isolated database is ready."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Isolated database did not become ready."
+          docker logs "$DB_CONTAINER" --tail 100 || true
+          exit 40
+
+      - name: Restore roles, schema, and data
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+            < "$RESTORE_DIR/plain/roles.sql"
+          docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+            < "$RESTORE_DIR/plain/schema.sql"
+          {
+            echo 'SET session_replication_role = replica;'
+            cat "$RESTORE_DIR/plain/data.sql"
+            echo 'SET session_replication_role = origin;'
+          } | docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres
+
+      - name: Verify restored database outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ inputs.expected_public_tables }}'
+          ACTUAL="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE';" | tr -d '[:space:]')"
+          echo "Restored public base tables: $ACTUAL (expected $EXPECTED)"
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "::error::Restored public table count does not match backup evidence."
+            exit 50
+          fi
+          KEY_TABLE="$(docker exec "$DB_CONTAINER" psql -At -U postgres -d postgres -c "select case when to_regclass('public.pm_observability_incidents') is not null then 'present' else 'missing' end;" | tr -d '[:space:]')"
+          if [[ "$KEY_TABLE" != "present" ]]; then
+            echo "::error::Key operational table pm_observability_incidents is missing after restore."
+            exit 51
+          fi
+          echo "RESTORE_VERIFIED: isolated restore completed with expected schema evidence."
+
+      - name: Cleanup plaintext and isolated database
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
+          rm -rf "$RESTORE_DIR" restore-artifact
+          echo "Cleanup complete: no decrypted backup is retained by this workflow."
