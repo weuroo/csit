@@ -1,14 +1,13 @@
-name: Storage Backup Vault Transfer Chunks
+name: Storage Backup Vault Transfer Chunks (Isolated)
 
 on:
   push:
-    branches: [master]
-    paths:
-      - '.backup-transfer/triggers/storage-*.trigger'
+    branches:
+      - backup/storage-vault-transfer-isolated
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 jobs:
   prepare-vault-transfer:
@@ -16,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout repository
+      - name: Checkout isolated backup branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -26,8 +25,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          trigger="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -E '^\.backup-transfer/triggers/storage-[0-9]+\.trigger$' | head -n1)"
-          [[ -n "$trigger" ]] || { echo '::error::No Storage transfer trigger in commit'; exit 20; }
+          mapfile -t triggers < <(find .backup-transfer/triggers -maxdepth 1 -type f -name 'storage-*.trigger' -print | sort)
+          [[ "${#triggers[@]}" -eq 1 ]] || { echo "::error::Expected exactly one approved Storage transfer trigger; found ${#triggers[@]}"; exit 20; }
+          trigger="${triggers[0]}"
           source_run="$(tr -d '[:space:]' < "$trigger")"
           [[ "$source_run" =~ ^[0-9]+$ ]] || { echo '::error::Invalid source run ID'; exit 21; }
           echo "source_run=$source_run" >> "$GITHUB_OUTPUT"
@@ -46,7 +46,9 @@ jobs:
           test -f "source-artifact/ARTIFACT_SHA256SUMS"
           checksum="$(awk 'NF >= 2 {print $1; exit}' source-artifact/ARTIFACT_SHA256SUMS)"
           [[ "$checksum" =~ ^[0-9a-fA-F]{64}$ ]] || { echo '::error::Invalid encrypted payload checksum'; exit 22; }
-          printf '%s  %s\n' "$checksum" "source-artifact/storage-${BUCKET}.tar.gz.gpg" | sha256sum -c -
+          actual="$(sha256sum "source-artifact/storage-${BUCKET}.tar.gz.gpg" | awk '{print $1}')"
+          [[ "$actual" == "$checksum" ]] || { echo '::error::Encrypted payload SHA-256 mismatch'; exit 23; }
+          echo "encrypted_sha=$actual" >> "$GITHUB_OUTPUT"
 
       - name: Split encrypted payload without decrypting
         id: split
@@ -60,20 +62,33 @@ jobs:
           src="source-artifact/storage-${BUCKET}.tar.gz.gpg"
           split -b 240M -d -a 2 "$src" "vault-parts/storage-${BUCKET}-run${SOURCE_RUN}.gpg.part-"
           count="$(find vault-parts -maxdepth 1 -type f -name '*.part-*' | wc -l | tr -d ' ')"
-          [[ "$count" -ge 2 && "$count" -le 4 ]] || { echo "::error::Unexpected chunk count: $count"; exit 23; }
+          [[ "$count" -ge 2 && "$count" -le 4 ]] || { echo "::error::Unexpected chunk count: $count"; exit 24; }
           sha256sum vault-parts/*.part-* > vault-parts/CHUNKS_SHA256SUMS
           original_sha="$(sha256sum "$src" | awk '{print $1}')"
           original_bytes="$(stat -c '%s' "$src")"
           cat > vault-parts/REASSEMBLY_MANIFEST.txt <<EOF
-          format=pm-agency-storage-vault-transfer-v1
+          format=pm-agency-storage-vault-transfer-v2
           source_backup_run=${SOURCE_RUN}
+          source_artifact=supabase-storage-${BUCKET}-${SOURCE_RUN}
           bucket=${BUCKET}
           original_file=storage-${BUCKET}.tar.gz.gpg
           original_sha256=${original_sha}
           original_bytes=${original_bytes}
           chunk_count=${count}
+          chunk_size_target=240MiB
           reassemble_command=cat storage-${BUCKET}-run${SOURCE_RUN}.gpg.part-* > storage-${BUCKET}.tar.gz.gpg
           verify_command=sha256sum storage-${BUCKET}.tar.gz.gpg
+          EOF
+          cat > vault-parts/TRANSFER_RESULT.json <<EOF
+          {
+            "status": "CHUNK_ARTIFACTS_READY",
+            "source_backup_run": "${SOURCE_RUN}",
+            "transfer_workflow_run": "${GITHUB_RUN_ID}",
+            "chunk_count": ${count},
+            "original_encrypted_sha256": "${original_sha}",
+            "original_encrypted_bytes": ${original_bytes},
+            "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
           EOF
           echo "chunk_count=$count" >> "$GITHUB_OUTPUT"
           echo "original_sha=$original_sha" >> "$GITHUB_OUTPUT"
@@ -116,43 +131,16 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
-      - name: Upload reassembly metadata
+      - name: Upload reassembly and audit metadata
         uses: actions/upload-artifact@v4
         with:
           name: storage-vault-${{ steps.source.outputs.source_run }}-manifest
           path: |
             vault-parts/CHUNKS_SHA256SUMS
             vault-parts/REASSEMBLY_MANIFEST.txt
+            vault-parts/TRANSFER_RESULT.json
           retention-days: 3
           if-no-files-found: error
-
-      - name: Record transfer result for audit
-        shell: bash
-        env:
-          SOURCE_RUN: ${{ steps.source.outputs.source_run }}
-          CHUNK_COUNT: ${{ steps.split.outputs.chunk_count }}
-          ORIGINAL_SHA: ${{ steps.split.outputs.original_sha }}
-          ORIGINAL_BYTES: ${{ steps.split.outputs.original_bytes }}
-        run: |
-          set -euo pipefail
-          mkdir -p .backup-transfer/results
-          result=".backup-transfer/results/storage-${SOURCE_RUN}.json"
-          cat > "$result" <<EOF
-          {
-            "status": "CHUNK_ARTIFACTS_READY",
-            "source_backup_run": "${SOURCE_RUN}",
-            "transfer_workflow_run": "${GITHUB_RUN_ID}",
-            "chunk_count": ${CHUNK_COUNT},
-            "original_encrypted_sha256": "${ORIGINAL_SHA}",
-            "original_encrypted_bytes": ${ORIGINAL_BYTES},
-            "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          git config user.name 'PM Backup Automation'
-          git config user.email 'backup-automation@users.noreply.github.com'
-          git add "$result"
-          git commit -m "backup: record Storage vault transfer run ${SOURCE_RUN}"
-          git push origin HEAD:master
 
       - name: Remove working encrypted material
         if: always()
