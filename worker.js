@@ -5,6 +5,11 @@ export default {
     if (!type.includes('text/html')) return response;
 
     return new HTMLRewriter()
+      .on('head', {
+        element(el) {
+          el.append('<link rel="stylesheet" href="/ux-fix.css">', { html: true });
+        }
+      })
       .on('body', {
         element(el) {
           el.append('<script src="/layout-fix.js" defer></script>', { html: true });
