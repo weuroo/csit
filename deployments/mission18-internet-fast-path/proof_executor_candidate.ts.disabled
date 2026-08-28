@@ -142,11 +142,12 @@ Deno.serve(async(req:Request)=>{
   try{
     while(true){
       await assertProofWindow(commandId);
+      // DNS resolution is itself an external network side effect. Because the atomic slot is already consumed,
+      // account the proof attempt before the first DNS lookup so any DNS failure remains a consumed attempt.
+      networkPerformed=true;
       const dns=await stablePublicDns(current.hostname);
       await assertProofWindow(commandId);
       const remaining=MAX_TOTAL_MS-(Date.now()-started);
-      // Reservation has already consumed the only slot. The next call is the sole permitted network attempt.
-      networkPerformed=true;
       const result=await pinnedGet(current,dns,remaining,transportLegs.length);
       transportLegs.push(result);
       if(result.status>=300&&result.status<400){
@@ -187,7 +188,7 @@ Deno.serve(async(req:Request)=>{
 - Requires exactly one active PAOJAI PUBLIC_READ grant globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, not beyond the proof window, with exact safe resource flags.
 - For every network leg, persists validated DNS answers, selected pinned IP/family and actual socket remoteAddress/remoteFamily; transport fails closed unless actual remoteAddress equals selected IP.
 - Same-host HTTPS redirects are allowed up to 3 and each followed leg repeats fresh two-read DNS stability, selected-IP binding and actual remote-address verification; zero redirects are valid.
-- network_request_performed becomes true immediately before post-reservation transport; any transport failure still consumes the slot.
+- network_request_performed becomes true before the first post-reservation DNS lookup because DNS itself is an external network side effect; any DNS/transport failure still consumes the slot.
 - Total proof timeout, including redirects, is <=10 seconds; response limit is 1 MiB.
 - Reservation replay is fail-closed before DNS/network and now authority-reduces via emergency relock.
 - Reservation RPC error/missing/malformed response is RESERVATION_OUTCOME_AMBIGUOUS: no DNS/network, emergency relock required, slot state treated unknown/consumed-safe, and fresh review/Owner approval required.
