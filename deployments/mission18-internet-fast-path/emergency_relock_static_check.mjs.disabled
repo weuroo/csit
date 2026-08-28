@@ -9,18 +9,32 @@ const c=fs.readFileSync(contractPath,'utf8');
 const required=[
   'pm_internet_transport_proof_emergency_relock_v1',
   'cleanup_verified',
-  'retryRequiresFreshReviewAndOwnerApproval'
+  'retryRequiresFreshReviewAndOwnerApproval',
+  'FINALIZE_SUCCESS_FAILED:',
+  'FINALIZE_FAILED_AFTER_PROOF_ERROR:',
+  'RESERVATION_OUTCOME_AMBIGUOUS',
+  'RESERVATION_REJECTED_OR_REPLAYED:'
 ];
 const missing=required.filter(x=>!s.includes(x));
 if(missing.length){
   console.error('MISSION18_EMERGENCY_RELOCK_WIRING_BLOCKED', {missing});
   process.exit(1);
 }
-// Normal finalize failure must not be silently swallowed.
-if(/catch\s*\{\s*\}/.test(s) || /catch\s*\([^)]*\)\s*\{\s*\}/.test(s)){
-  console.error('MISSION18_SILENT_CLEANUP_FAILURE_FORBIDDEN');
+
+// Check the material cleanup branches directly. Do not globally ban empty catches because
+// bounded DNS A/AAAA probing intentionally tolerates one address-family lookup failure.
+const cleanupFailures=[];
+const mustExec=(re,msg)=>{if(!re.test(s))cleanupFailures.push(msg)};
+mustExec(/catch\(fe\)\{const relock=await emergencyRelock\(commandId,'FINALIZE_SUCCESS_FAILED:'/s,'success-finalize failure is not wired to emergency relock');
+mustExec(/catch\(fe\)\{try\{const relock=await emergencyRelock\(commandId,'FINALIZE_FAILED_AFTER_PROOF_ERROR:'/s,'failed-proof finalize failure is not wired to emergency relock');
+mustExec(/RESERVATION_OUTCOME_AMBIGUOUS[\s\S]{0,900}?emergencyRelock\(commandId,'RESERVATION_OUTCOME_AMBIGUOUS:/s,'ambiguous reservation is not wired to emergency relock before return');
+mustExec(/RESERVATION_REJECTED_OR_REPLAYED[\s\S]{0,900}?emergencyRelock\(commandId,'RESERVATION_REJECTED_OR_REPLAYED:/s,'rejected/replayed reservation is not wired to emergency relock');
+mustExec(/cleanupVerified=!!relock\?\.cleanup_verified/s,'cleanup verification result not derived from relock response');
+if(cleanupFailures.length){
+  console.error('MISSION18_EMERGENCY_RELOCK_EXECUTOR_BLOCKED', {failures:cleanupFailures});
   process.exit(1);
 }
+
 const contractFailures=[];
 const must=(re,msg)=>{if(!re.test(c))contractFailures.push(msg)};
 must(/EVERY active PAOJAI_OPERATIONS_AI grant whose allowed_actions contains PUBLIC_READ/i,'emergency relock contract does not require global PAOJAI PUBLIC_READ revocation');
