@@ -18,21 +18,22 @@ Canonical proof target:
    - `pm_internet_create_command_bound_pilot_grant_v1`
    - `pm_internet_transport_proof_reserve_request_v1`
    - `pm_internet_transport_proof_finalize_request_v1`
-6. Apply/review `crypto_bound_command_helper_patch.sql.disabled` so the transport helper accepts ONLY `CRYPTO_BOUND_GATEWAY_V2` commands and `ALLOW_CRYPTO_BOUND_V2` audits; legacy v1 gateway audits must never satisfy the proof path.
-7. Run canonical-name readiness + cross-binding verification.
-8. Require implementation contract validation + authority-surface regression.
-9. Promote only an attested proof executor artifact to `APPROVED_FOR_PILOT`; no general production network authority.
-10. Before deployment, run static validators including `predeploy_static_validation.mjs.disabled` and `executor_runtime_authority_static_check.mjs.disabled`. The executor must re-assert persisted VERIFIED Owner command + consumed nonce/gateway audit before every material transport leg and reject unless exactly one active PAOJAI `PUBLIC_READ` grant exists globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, within unlock expiry, with the exact safe resource scope.
-11. Deploy a separate proof-only executor fixed to exact `https://example.com/`, one request maximum.
-12. As soon as Production atomic reservation exists, apply/review `runtime_concurrency_support.sql.disabled`, deploy the temporary operator-authenticated `runtime_concurrency_harness.ts.disabled`, and run `runtime_concurrency_static_check.mjs.disabled` before execution. Runtime evidence must be SERVER-DERIVED: each simultaneous reserve call writes its own attempt row; recorder v2 accepts only `run_id` and cannot accept caller-supplied winners/losers/results/network flags. Require exactly one winner, current reservation-function SHA binding, expected atomic update shape, real proof lane pristine, Owner Lockdown true, and zero DNS/external proof-network side effect.
-13. Only after technical implementation is complete, Owner crypto/exact-payload readiness passes, and all required gates pass, request fresh Owner Passkey approval using exact v3-or-later intent.
-14. Phase A: bounded Owner Lockdown release, scope `TRANSPORT_PROOF_SINGLE_REQUEST`, <=120 seconds, general production network remains false.
-15. Phase B: create exact-command-bound <=10-minute `PAOJAI_OPERATIONS_AI` / `PUBLIC_READ` grant.
-16. Atomically reserve the one request slot before DNS or any network side effect.
-17. Execute pinned-IP TLS proof to exact `https://example.com/`; same-host HTTPS redirects only if observed, max 3, timeout <=10s, response <=1 MiB.
-18. Collect direct DNS connect-time evidence and redirect revalidation evidence for every redirect actually followed; zero redirects must be recorded explicitly rather than fabricated as redirect evidence.
-19. Immediately finalize idempotently, relock, revoke/expire grant, then run Central/Action/Guardian + Authority + Contract + Concurrency/Failure Policy + Recovery/Kill-Switch checks.
-20. Complete only if Production evidence has exactly one consumed request, `network_request_performed=true`, a valid bounded response, DNS/redirect policy evidence passed, no Critical regression, zero active PAOJAI PUBLIC_READ grants, Owner Lockdown restored, general Production network false, and Recovery/Kill-Switch verified.
+6. Immediately apply/review `reservation_replay_guard.sql.disabled` over the base reservation function BEFORE any executor or concurrency harness can run. The authoritative reservation response contract is: first winner = `ok=true`, `duplicate=false`, `slot_consumed=true`, `network_execution_allowed=true`; any consumed-token replay = `ok=false`, `duplicate=true`, `network_execution_allowed=false`; cross-command token reuse fails closed. Run `reservation_replay_static_check.mjs.disabled` against the final reservation function source and executor. A base `schema_bound_candidate.sql.disabled` reservation response by itself is NOT activation-ready.
+7. Apply/review `crypto_bound_command_helper_patch.sql.disabled` so the transport helper accepts ONLY `CRYPTO_BOUND_GATEWAY_V2` commands and `ALLOW_CRYPTO_BOUND_V2` audits; legacy v1 gateway audits must never satisfy the proof path.
+8. Run canonical-name readiness + cross-binding verification.
+9. Require implementation contract validation + authority-surface regression.
+10. Promote only an attested proof executor artifact to `APPROVED_FOR_PILOT`; no general production network authority.
+11. Before deployment, run static validators including `predeploy_static_validation.mjs.disabled`, `executor_runtime_authority_static_check.mjs.disabled`, and `reservation_replay_static_check.mjs.disabled`. The executor must re-assert persisted VERIFIED Owner command + consumed nonce/gateway audit before every material transport leg and reject unless exactly one active PAOJAI `PUBLIC_READ` grant exists globally, bound to the exact command, LOW risk, non-delegable, <=10 minutes, within unlock expiry, with the exact safe resource scope.
+12. Deploy a separate proof-only executor fixed to exact `https://example.com/`, one request maximum.
+13. As soon as Production atomic reservation exists, apply/review `runtime_concurrency_support.sql.disabled`, deploy the temporary operator-authenticated `runtime_concurrency_harness.ts.disabled`, and run `runtime_concurrency_static_check.mjs.disabled` before execution. Runtime evidence must be SERVER-DERIVED: each simultaneous reserve call writes its own attempt row; recorder v2 accepts only `run_id` and cannot accept caller-supplied winners/losers/results/network flags. Require exactly one winner, current reservation-function SHA binding, expected atomic update shape, real proof lane pristine, Owner Lockdown true, and zero DNS/external proof-network side effect.
+14. Only after technical implementation is complete, Owner crypto/exact-payload readiness passes, and all required gates pass, request fresh Owner Passkey approval using exact v3-or-later intent.
+15. Phase A: bounded Owner Lockdown release, scope `TRANSPORT_PROOF_SINGLE_REQUEST`, <=120 seconds, general production network remains false.
+16. Phase B: create exact-command-bound <=10-minute `PAOJAI_OPERATIONS_AI` / `PUBLIC_READ` grant.
+17. Atomically reserve the one request slot before DNS or any network side effect.
+18. Execute pinned-IP TLS proof to exact `https://example.com/`; same-host HTTPS redirects only if observed, max 3, timeout <=10s, response <=1 MiB.
+19. Collect direct DNS connect-time evidence and redirect revalidation evidence for every redirect actually followed; zero redirects must be recorded explicitly rather than fabricated as redirect evidence.
+20. Immediately finalize idempotently, relock, revoke/expire grant, then run Central/Action/Guardian + Authority + Contract + Concurrency/Failure Policy + Recovery/Kill-Switch checks.
+21. Complete only if Production evidence has exactly one consumed request, `network_request_performed=true`, a valid bounded response, DNS/redirect policy evidence passed, no Critical regression, zero active PAOJAI PUBLIC_READ grants, Owner Lockdown restored, general Production network false, and Recovery/Kill-Switch verified.
 
 ## Crypto-binding activation order
 
@@ -42,9 +43,10 @@ The crypto-prep artifacts are intentionally disabled. Activation order after liv
 2. Apply all hardening findings in `crypto_binding_review_2026-08-28.md`: require exact trusted credential, persisted `evidence.verified=true`, consumed evidence, freshness, exact owner/device/nonce/payload hash/intent/origin/RP binding.
 3. `approval_edge_v5_crypto_bound.ts.disabled` — server-side WebAuthn verification and authority handoff only to gateway v2; approval-only, no grant/unlock/lane/network mutation.
 4. `owner_gateway_exact_payload_binding_readiness.sql.disabled` — verify the actual gateway mismatch/reason checks rather than brittle equality-source strings; all canonical payload/resource scope authority fields must be independently enforced.
-5. `schema_bound_candidate.sql.disabled` — technical transport controls after crypto binding is safe.
-6. `crypto_bound_command_helper_patch.sql.disabled` — force all transport controls to accept only crypto-bound v2 audit semantics.
-7. Re-run Owner crypto/exact-payload readiness, contract validation, Authority Surface, Central/Action/Guardian, concurrency/failure-policy and Recovery/Kill-Switch before Owner Passkey is surfaced.
+5. `schema_bound_candidate.sql.disabled` — base technical transport controls after crypto binding is safe.
+6. `reservation_replay_guard.sql.disabled` — mandatory replacement of the base reservation function; establishes the executor-compatible first-winner/replay response contract and fail-closed replay behavior. Do not proceed if its static checker fails.
+7. `crypto_bound_command_helper_patch.sql.disabled` — force all transport controls to accept only crypto-bound v2 audit semantics.
+8. Re-run Owner crypto/exact-payload readiness, contract validation, Authority Surface, Central/Action/Guardian, reservation replay, concurrency/failure-policy and Recovery/Kill-Switch before Owner Passkey is surfaced.
 
 ## Merge / activation gate
 
@@ -60,6 +62,7 @@ This PR MUST remain draft and unmerged while Feature Freeze is active. After Sta
 - No credentials, downloads, code execution, external side effects, protected-data egress, or cross-client context.
 - `production_network_enabled` remains false throughout the proof mission.
 - Request policy: `FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE`.
+- The final promoted reservation function must return `network_execution_allowed=true` only for the sole first atomic winner and false for every replay/loser. Any contract mismatch with the executor is a promotion blocker.
 - A failed DNS/TLS/timeout/network attempt still consumes the one request slot; retry requires new review and fresh Owner approval/reset.
 - Approval endpoint itself never unlocks, creates grant, enables proof lane, or enables network.
 - Proof executor is separate from the general executor.
