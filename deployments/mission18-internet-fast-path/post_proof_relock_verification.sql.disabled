@@ -1,8 +1,70 @@
 -- PRE-STAGED ONLY. DO NOT EXECUTE DURING FEATURE FREEZE.
 -- Mission #18 post-proof fail-closed verification bundle.
 -- Run immediately after the single proof attempt and cleanup/relock sequence.
+--
+-- v1.6 OUTCOME VERIFICATION SCOPE SAFETY:
+-- Whole-mission completion MUST be bound to the exact request token + exact Owner
+-- command used for this attempt. Never infer success from "latest" history alone.
+-- Before execution, the orchestrator MUST set these transaction-local settings
+-- from the exact reservation result and VERIFIED Owner command it already holds:
+--   select set_config('pm.mission18_expected_request_token','<exact-request-token>',true);
+--   select set_config('pm.mission18_expected_command_id','<exact-command-id>',true);
+-- Missing/malformed/mismatched scope is FAIL CLOSED and must not be treated as proof.
 
+DO $$
+DECLARE
+  expected_token uuid;
+  expected_command uuid;
+  bound_count int;
+BEGIN
+  BEGIN
+    expected_token := nullif(current_setting('pm.mission18_expected_request_token', true),'')::uuid;
+    expected_command := nullif(current_setting('pm.mission18_expected_command_id', true),'')::uuid;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'MISSION18_POST_PROOF_SCOPE_MALFORMED';
+  END;
+
+  IF expected_token IS NULL OR expected_command IS NULL THEN
+    RAISE EXCEPTION 'MISSION18_POST_PROOF_EXACT_SCOPE_REQUIRED';
+  END IF;
+
+  SELECT count(*) INTO bound_count
+  FROM public.pm_internet_transport_proof_request_tokens_v1 r
+  WHERE r.request_token=expected_token
+    AND r.source_command_id=expected_command
+    AND r.lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF';
+
+  IF bound_count <> 1 THEN
+    RAISE EXCEPTION 'MISSION18_POST_PROOF_SCOPE_BINDING_NOT_UNIQUE';
+  END IF;
+END $$;
+
+with expected_scope as (
+  select
+    current_setting('pm.mission18_expected_request_token')::uuid as request_token,
+    current_setting('pm.mission18_expected_command_id')::uuid as command_id
+),
+bound_request as (
+  select r.*
+  from public.pm_internet_transport_proof_request_tokens_v1 r
+  join expected_scope e
+    on e.request_token=r.request_token
+   and e.command_id=r.source_command_id
+  where r.lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+),
+scope_check as (
+  select jsonb_build_object(
+    'exact_request_token', e.request_token,
+    'exact_command_id', e.command_id,
+    'bound_row_count', count(br.request_token),
+    'exact_scope_bound', count(br.request_token)=1
+  ) as evidence
+  from expected_scope e
+  left join bound_request br on true
+  group by e.request_token,e.command_id
+)
 select jsonb_build_object(
+  'verification_scope', (select evidence from scope_check),
   'gateway', (
     select jsonb_build_object(
       'mode', mode,
@@ -37,7 +99,7 @@ select jsonb_build_object(
     where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
     limit 1
   ),
-  'latest_consumed_request', (
+  'exact_consumed_request', (
     select jsonb_build_object(
       'request_token',request_token,
       'source_command_id',source_command_id,
@@ -46,10 +108,7 @@ select jsonb_build_object(
       'outcome',outcome,
       'evidence',evidence
     )
-    from public.pm_internet_transport_proof_request_tokens_v1
-    where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
-    order by reserved_at desc
-    limit 1
+    from bound_request
   ),
   'authority', public.pm_internet_authority_surface_regression_v1(),
   'contracts', public.pm_internet_post_freeze_contract_validation_v1(),
@@ -63,18 +122,22 @@ select jsonb_build_object(
 ) as mission18_post_proof_relock_verification;
 
 -- PASS criteria after the proof attempt:
--- 1. gateway.mode='SHADOW_ONLY', owner_lockdown_active=true, production_network_enabled=false.
--- 2. active_grants=0 after revoke/expiry cleanup.
--- 3. proof lane fixed_target_url='https://example.com/', enabled=false, max_requests=1, network_request_count=1.
--- 4. consumed request remains consumed forever; no decrement/reopen even after failed attempt.
--- 5. For successful completion specifically: latest request outcome='SUCCESS', finalized_at non-null,
---    evidence.network_request_performed=true, evidence.fixed_target_url exact example.com,
---    evidence.dns_connect_time_verified=true, evidence.redirect_policy_verified=true,
---    evidence.redirect_revalidation_satisfied=true, bounded response criteria passed,
+-- 1. verification_scope.exact_scope_bound=true and the exact request_token + exact command_id
+--    equal the reservation result and VERIFIED Owner command of THIS attempt. "Latest" rows are never sufficient.
+-- 2. gateway.mode='SHADOW_ONLY', owner_lockdown_active=true, production_network_enabled=false.
+-- 3. active_grants=0 after revoke/expiry cleanup.
+-- 4. proof lane fixed_target_url='https://example.com/', enabled=false, max_requests=1, network_request_count=1.
+-- 5. exact consumed request remains consumed forever; no decrement/reopen even after failed attempt.
+-- 6. For successful completion specifically: exact request outcome='SUCCESS', finalized_at non-null,
+--    server-derived bound evidence.network_request_performed=true, fixed_target_url exact example.com,
+--    DNS/connect-time evidence passed, redirect policy/revalidation passed, bounded response criteria passed,
 --    and lane proof_completed=true with both DNS and redirect-policy evidence flags true.
--- 6. Zero redirects are valid only when evidence.redirect_observed=false and redirect_revalidation_required=false;
+-- 7. Zero redirects are valid only when evidence.redirect_observed=false and redirect_revalidation_required=false;
 --    redirect_connect_time_verified must not be fabricated true in that case.
--- 7. authority/contracts/concurrency/failure-policy/recovery/rollback checks pass.
--- 8. Central / Action / Guardian latest runs must have zero failures and no Critical regression.
--- 9. Any cleanup/relock failure is CRITICAL: keep general network disabled, preserve evidence, escalate; do not retry automatically.
--- 10. Any failed proof attempt still consumes the slot and requires fresh review + fresh Owner approval for retry.
+-- 8. Evidence provenance must bind this exact request token to the attested proof-only executor/artifact and
+--    one-time finalize capability. Caller-supplied success JSON is never sufficient.
+-- 9. authority/contracts/concurrency/failure-policy/recovery/rollback checks pass.
+-- 10. Central / Action / Guardian latest runs must have zero failures and no Critical regression.
+-- 11. Any cleanup/relock or scope-binding failure is CRITICAL: keep general network disabled, preserve evidence,
+--     escalate; do not retry automatically.
+-- 12. Any failed proof attempt still consumes the slot and requires fresh review + fresh Owner approval for retry.
