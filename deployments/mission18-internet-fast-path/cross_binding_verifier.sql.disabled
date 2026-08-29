@@ -1,0 +1,74 @@
+-- PRE-STAGED ONLY. SAFE AS READ-ONLY VERIFICATION AFTER POST-FREEZE APPLY.
+-- Purpose: detect target/function/authority/concurrency-evidence drift before requesting fresh Owner Passkey.
+
+with helper_src as (
+  select coalesce(pg_get_functiondef(to_regprocedure('public.pm_internet_assert_verified_transport_command_v1(uuid)')),'') as src
+), helper_checks as (
+  select jsonb_build_object(
+    'present',src<>'',
+    'crypto_bound_verification_reason',position($q$verification_reason='CRYPTO_BOUND_GATEWAY_V2'$q$ in src)>0,
+    'crypto_bound_audit_decision',position($q$decision_code='ALLOW_CRYPTO_BOUND_V2'$q$ in src)>0,
+    'exact_v5_source',position($q$source_component='pm-owner-internet-pilot-approval-shadow-v5'$q$ in src)>0,
+    'exact_target',position($q$transport_proof_target_url'='https://example.com/'$q$ in src)>0,
+    'one_request',position($q$transport_proof_max_requests')::int,0)=1$q$ in replace(src,' ',''))>0,
+    'general_network_false',position($q$general_production_network_authorized')::boolean,true)=false$q$ in replace(src,' ',''))>0,
+    'legacy_v1_not_accepted',position($q$source_component='pm-owner-internet-pilot-approval-shadow'$q$ in src)=0
+  ) as j from helper_src
+), state as (
+select jsonb_build_object(
+  'canonical_target','https://example.com/',
+  'lane_target',(select fixed_target_url from public.pm_internet_transport_proof_lane_v1 where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'),
+  'lane_exact_match',coalesce((select fixed_target_url='https://example.com/' from public.pm_internet_transport_proof_lane_v1 where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'),false),
+  'functions',jsonb_build_object(
+    'bounded_unlock',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)') is not null,
+    'command_bound_grant',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)') is not null,
+    'reserve',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is not null,
+    'finalize',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)') is not null,
+    'crypto_bound_helper',to_regprocedure('public.pm_internet_assert_verified_transport_command_v1(uuid)') is not null,
+    'gateway_v2',to_regprocedure('public.pm_owner_command_gateway_v2(uuid,text)') is not null
+  ),
+  'service_role_only',jsonb_build_object(
+    'bounded_unlock',case when to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_transport_proof_bounded_unlock_v1(uuid)'),'EXECUTE') end,
+    'command_bound_grant',case when to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_create_command_bound_pilot_grant_v1(uuid)'),'EXECUTE') end,
+    'reserve',case when to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid)'),'EXECUTE') end,
+    'finalize',case when to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_internet_transport_proof_finalize_request_v1(uuid,text,jsonb)'),'EXECUTE') end,
+    'gateway_v2',case when to_regprocedure('public.pm_owner_command_gateway_v2(uuid,text)') is null then false else
+      not has_function_privilege('anon',to_regprocedure('public.pm_owner_command_gateway_v2(uuid,text)'),'EXECUTE') and
+      not has_function_privilege('authenticated',to_regprocedure('public.pm_owner_command_gateway_v2(uuid,text)'),'EXECUTE') and
+      not has_function_privilege('public',to_regprocedure('public.pm_owner_command_gateway_v2(uuid,text)'),'EXECUTE') and
+      has_function_privilege('service_role',to_regprocedure('public.pm_owner_command_gateway_v2(uuid,text)'),'EXECUTE') end
+  ),
+  'crypto_bound_helper',(select j from helper_checks),
+  'owner_exact_payload_binding',public.pm_owner_gateway_exact_payload_binding_readiness_v1(),
+  'concurrency',public.pm_internet_proof_lane_concurrency_readiness_v1(),
+  'gateway_fail_closed',(select jsonb_build_object('owner_lockdown_active',owner_lockdown_active,'production_network_enabled',production_network_enabled,'mode',mode,'pass',owner_lockdown_active=true and production_network_enabled=false and mode='SHADOW_ONLY') from public.pm_owner_internet_gateway_control_shadow_v1 where control_key='CONTROLLED_INTERNET_GATEWAY'),
+  'active_public_read_grants',(select count(*)::int from public.pm_agent_capability_grants_v1 where grantee_agent_key='PAOJAI_OPERATIONS_AI' and 'PUBLIC_READ'=any(allowed_actions) and status='ACTIVE' and (expires_at is null or expires_at>now())),
+  'live_verified_transport_commands',(select count(*)::int from public.pm_signed_owner_commands_v1 where verification_state='VERIFIED' and verification_reason='CRYPTO_BOUND_GATEWAY_V2' and expires_at>now() and command_type='GRANT_CAPABILITY' and action_scope='PUBLIC_READ' and canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST' and canonical_payload->>'transport_proof_target_url'='https://example.com/'),
+  'proof_lane_pristine',(select enabled=false and network_request_count=0 and proof_completed=false and max_requests=1 and fixed_target_url='https://example.com/' from public.pm_internet_transport_proof_lane_v1 where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'),
+  'network_request_performed',false,'production_mutation',false,'authority_expansion',false
+) as j)
+select j as mission18_cross_binding_verification from state;
+
+-- PASS BEFORE OWNER PASSKEY:
+-- lane_exact_match=true; all canonical functions + gateway v2 present and mutation authority service-role-only.
+-- crypto_bound_helper requires CRYPTO_BOUND_GATEWAY_V2 + ALLOW_CRYPTO_BOUND_V2 + exact v5 source; legacy v1 audit not accepted.
+-- owner_exact_payload_binding.passed=true.
+-- concurrency.passed=true with runtime_evidence_server_derived=true and current reservation SHA binding.
+-- gateway_fail_closed.pass=true; active_public_read_grants=0; live_verified_transport_commands=0; proof_lane_pristine=true.
+-- final proof target and Owner approval payload must equal canonical_target exactly.

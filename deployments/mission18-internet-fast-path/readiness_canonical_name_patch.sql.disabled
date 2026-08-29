@@ -1,0 +1,212 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Canonical post-freeze readiness semantics for Mission #18.
+-- Authority is unchanged; these functions are read-only and must not substitute for Owner approval.
+
+begin;
+
+-- Successor to the legacy v1 readiness check. It verifies the Mission #18 authority path itself,
+-- not merely whether public internet functions are service-role-only.
+create or replace function public.pm_owner_gateway_crypto_binding_readiness_v2()
+returns jsonb
+language plpgsql
+stable
+set search_path='public','pg_temp'
+as $$
+declare
+  fn_oid oid;
+  fn_def text;
+  anon_exec boolean:=false;
+  authenticated_exec boolean:=false;
+  service_role_exec boolean:=false;
+  has_caller_signature_boolean boolean:=true;
+  derives_stepup_server_side boolean:=false;
+  requires_consumed_stepup boolean:=false;
+  emits_crypto_bound_allow_audit boolean:=false;
+begin
+  select p.oid,pg_get_functiondef(p.oid) into fn_oid,fn_def
+  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public' and p.proname='pm_owner_command_gateway_v2'
+  order by p.oid desc limit 1;
+
+  if fn_oid is null then
+    return jsonb_build_object(
+      'passed',false,'reason','CRYPTO_BOUND_OWNER_GATEWAY_V2_MISSING',
+      'authority_expansion',false,'production_mutation',false,'network_request_performed',false
+    );
+  end if;
+
+  anon_exec:=has_function_privilege('anon',fn_oid,'EXECUTE');
+  authenticated_exec:=has_function_privilege('authenticated',fn_oid,'EXECUTE');
+  service_role_exec:=has_function_privilege('service_role',fn_oid,'EXECUTE');
+  has_caller_signature_boolean:=fn_def ilike '%p_signature_verified%';
+  derives_stepup_server_side:=fn_def ilike '%pm_owner_passkey_stepup_challenges_v1%'
+    and fn_def ilike '%expected_origin%'
+    and fn_def ilike '%expected_rp_id%'
+    and fn_def ilike '%payload_hash%'
+    and fn_def ilike '%nonce%';
+  requires_consumed_stepup:=fn_def ilike '%used_at is not null%';
+  emits_crypto_bound_allow_audit:=fn_def ilike '%ALLOW_CRYPTO_BOUND_V2%'
+    and fn_def ilike '%pm_owner_command_gateway_audit_v1%';
+
+  return jsonb_build_object(
+    'passed',not has_caller_signature_boolean
+      and derives_stepup_server_side
+      and requires_consumed_stepup
+      and emits_crypto_bound_allow_audit
+      and not anon_exec and not authenticated_exec and service_role_exec,
+    'reason',case
+      when anon_exec or authenticated_exec then 'CRYPTO_BOUND_GATEWAY_EXECUTE_SURFACE_TOO_BROAD'
+      when not service_role_exec then 'CRYPTO_BOUND_GATEWAY_SERVICE_ROLE_EXECUTE_MISSING'
+      when has_caller_signature_boolean then 'CALLER_ASSERTED_SIGNATURE_AUTHORITY_PRESENT'
+      when not derives_stepup_server_side then 'SERVER_SIDE_STEPUP_BINDING_NOT_DERIVED'
+      when not requires_consumed_stepup then 'CONSUMED_STEPUP_NOT_REQUIRED'
+      when not emits_crypto_bound_allow_audit then 'CRYPTO_BOUND_ALLOW_AUDIT_NOT_ENFORCED'
+      else 'CRYPTO_BOUND_GATEWAY_V2_READY'
+    end,
+    'caller_asserted_signature_authority_present',has_caller_signature_boolean,
+    'server_side_stepup_binding_present',derives_stepup_server_side,
+    'consumed_stepup_required',requires_consumed_stepup,
+    'crypto_bound_allow_audit_present',emits_crypto_bound_allow_audit,
+    'anon_execute',anon_exec,'authenticated_execute',authenticated_exec,'service_role_execute',service_role_exec,
+    'authority_expansion',false,'production_mutation',false,'network_request_performed',false
+  );
+end;
+$$;
+
+revoke all on function public.pm_owner_gateway_crypto_binding_readiness_v2() from public, anon, authenticated;
+grant execute on function public.pm_owner_gateway_crypto_binding_readiness_v2() to service_role;
+
+create or replace function public.pm_internet_post_freeze_implementation_readiness_v3()
+returns jsonb
+language plpgsql
+stable
+set search_path='public','pg_temp'
+as $$
+declare
+  pre jsonb := public.pm_internet_pilot_preflight_readiness_v2();
+  conc jsonb := public.pm_internet_proof_lane_concurrency_readiness_v1();
+  auth jsonb := public.pm_internet_authority_surface_regression_v1();
+  crypto jsonb := public.pm_owner_gateway_crypto_binding_readiness_v2();
+  contracts jsonb := public.pm_internet_post_freeze_contract_validation_v1();
+  act jsonb := public.pm_internet_transport_proof_activation_gate_v1();
+  wait_gaps text[] := array[]::text[];
+  impl_gaps text[] := array[]::text[];
+  runtime_gaps text[] := array[]::text[];
+  human_gates text[] := array[]::text[];
+  has_unlock boolean;
+  has_grant boolean;
+  has_reserve boolean;
+  has_finalize boolean;
+  candidate record;
+  proof_artifact record;
+  verified_cmds bigint;
+  implementation_complete boolean;
+  pre_owner_gates_pass boolean;
+  tech_ready_for_owner boolean;
+begin
+  if coalesce((pre#>>'{stabilization,status}')='active',true)
+     or coalesce((pre#>>'{stabilization,feature_freeze}')::boolean,true)
+     or not coalesce((pre#>>'{stabilization,autonomy_expansion_allowed}')::boolean,false) then
+    wait_gaps := array_append(wait_gaps,'STABILIZATION_EXIT_GATE');
+  end if;
+
+  select count(*) into verified_cmds
+  from public.pm_signed_owner_commands_v1
+  where verification_state='VERIFIED'
+    and verification_reason='CRYPTO_BOUND_GATEWAY_V2'
+    and expires_at>now()
+    and command_type='GRANT_CAPABILITY'
+    and action_scope='PUBLIC_READ'
+    and canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'
+    and canonical_payload->>'transport_proof_target_url'='https://example.com/'
+    and coalesce((canonical_payload->>'transport_proof_max_requests')::int,0)=1
+    and coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false;
+
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_transport_proof_bounded_unlock_v1') into has_unlock;
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_create_command_bound_pilot_grant_v1') into has_grant;
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_transport_proof_reserve_request_v1') into has_reserve;
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pm_internet_transport_proof_finalize_request_v1') into has_finalize;
+
+  if not has_unlock then impl_gaps:=array_append(impl_gaps,'BOUNDED_UNLOCK_IMPLEMENTATION_MISSING'); end if;
+  if not has_grant then impl_gaps:=array_append(impl_gaps,'COMMAND_BOUND_BOUNDED_GRANT_CREATION_MISSING'); end if;
+  if not has_reserve then impl_gaps:=array_append(impl_gaps,'PRODUCTION_ATOMIC_REQUEST_RESERVATION_MISSING'); end if;
+  if not has_finalize then impl_gaps:=array_append(impl_gaps,'IDEMPOTENT_REQUEST_FINALIZE_MISSING'); end if;
+
+  select function_slug,function_version,source_sha256,review_state,network_compiletime_enabled into candidate
+  from public.pm_internet_executor_release_artifact_attestation_v1
+  where artifact_key='CONTROLLED_INTERNET_EXECUTOR_CANDIDATE';
+  if not found or candidate.review_state<>'APPROVED_FOR_PILOT' then
+    impl_gaps:=array_append(impl_gaps,'EXECUTOR_ARTIFACT_PROMOTION_PENDING');
+  end if;
+
+  select function_slug,function_version,source_sha256,review_state,network_compiletime_enabled into proof_artifact
+  from public.pm_internet_executor_release_artifact_attestation_v1
+  where artifact_key='CONTROLLED_INTERNET_EXECUTOR_PROOF';
+  if not found
+     or proof_artifact.function_slug<>'pm-controlled-internet-executor-proof'
+     or proof_artifact.review_state<>'APPROVED_FOR_PILOT'
+     or not coalesce(proof_artifact.network_compiletime_enabled,false) then
+    impl_gaps:=array_append(impl_gaps,'NETWORK_ENABLED_PROOF_ARTIFACT_NOT_DEPLOYED');
+  end if;
+
+  if not coalesce((conc->>'passed')::boolean,false) then
+    runtime_gaps:=array_append(runtime_gaps,'RUNTIME_CONCURRENCY_PROOF_PENDING');
+  end if;
+
+  if 'DNS_REBINDING_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then
+    runtime_gaps:=array_append(runtime_gaps,'DNS_REBINDING_CONNECT_TIME_PROOF_PENDING');
+  end if;
+  if 'REDIRECT_REVALIDATION_EVIDENCE_PENDING'=any(array(select jsonb_array_elements_text(coalesce(pre->'runtime_evidence_blockers','[]'::jsonb)))) then
+    runtime_gaps:=array_append(runtime_gaps,'REDIRECT_CONNECT_TIME_PROOF_PENDING');
+  end if;
+
+  implementation_complete := cardinality(wait_gaps)=0 and cardinality(impl_gaps)=0;
+  pre_owner_gates_pass :=
+    coalesce((contracts->>'passed')::boolean,false)
+    and coalesce((auth->>'passed')::boolean,false)
+    and coalesce((crypto->>'passed')::boolean,false)
+    and coalesce((conc->>'passed')::boolean,false);
+  tech_ready_for_owner := implementation_complete and pre_owner_gates_pass;
+
+  if tech_ready_for_owner and verified_cmds=0 then
+    human_gates:=array_append(human_gates,'OWNER_PASSKEY_COMMAND_REQUIRED_NOW');
+  elsif not tech_ready_for_owner and verified_cmds=0 then
+    human_gates:=array_append(human_gates,'OWNER_PASSKEY_COMMAND_REQUIRED_AFTER_TECH_READY');
+  end if;
+
+  return jsonb_build_object(
+    'mode','READ_ONLY_POST_FREEZE_READINESS_V3_CANONICAL_NAMES_CRYPTO_BOUND',
+    'technical_implementation_complete',implementation_complete,
+    'pre_owner_contract_passed',coalesce((contracts->>'passed')::boolean,false),
+    'pre_owner_authority_passed',coalesce((auth->>'passed')::boolean,false),
+    'pre_owner_crypto_binding_passed',coalesce((crypto->>'passed')::boolean,false),
+    'pre_owner_crypto_binding',crypto,
+    'pre_owner_concurrency_passed',coalesce((conc->>'passed')::boolean,false),
+    'pre_owner_gates_passed',pre_owner_gates_pass,
+    'owner_action_required_now',tech_ready_for_owner and verified_cmds=0,
+    'owner_action_already_satisfied',tech_ready_for_owner and verified_cmds>0,
+    'wait_gaps',to_jsonb(wait_gaps),
+    'implementation_gaps',to_jsonb(impl_gaps),
+    'human_gates',to_jsonb(human_gates),
+    'runtime_proof_gaps',to_jsonb(runtime_gaps),
+    'canonical_target','https://example.com/',
+    'canonical_grant_function','pm_internet_create_command_bound_pilot_grant_v1',
+    'activation_gate',act,
+    'production_mutation',false,
+    'authority_expansion',false,
+    'network_request_performed',false
+  );
+end;
+$$;
+
+revoke all on function public.pm_internet_post_freeze_implementation_readiness_v3() from public, anon, authenticated;
+grant execute on function public.pm_internet_post_freeze_implementation_readiness_v3() to service_role;
+
+commit;
+
+-- Mandatory interpretation:
+-- * owner_action_required_now=true ONLY after Stabilization Exit, all six implementation gaps are closed,
+--   contract validation, internet authority surface, CRYPTO-BOUND Owner Gateway v2 readiness, and runtime concurrency all pass.
+-- * VERIFIED commands count only when verification_reason='CRYPTO_BOUND_GATEWAY_V2'.
+-- * DNS/redirect runtime evidence is intentionally not a pre-Owner gate; it is produced by the single real proof.
+-- * No verified command, unlock, grant, reservation or network action is created by these read-only functions.

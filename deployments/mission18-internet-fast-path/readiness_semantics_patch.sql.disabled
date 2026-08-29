@@ -1,0 +1,99 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Purpose: remove circular readiness semantics without weakening any safety gate.
+-- Runtime DNS/redirect evidence can only exist after a real bounded transport attempt,
+-- so it gates proof completion, not permission to attempt the first proof.
+
+begin;
+
+create or replace function public.pm_internet_post_freeze_implementation_readiness_v2()
+returns jsonb
+language plpgsql
+stable
+set search_path='public','pg_temp'
+as $$
+declare
+  base jsonb := public.pm_internet_post_freeze_implementation_readiness_v1();
+  act jsonb := public.pm_internet_transport_proof_activation_gate_v1();
+  runtime_gaps jsonb := coalesce(base->'runtime_proof_gaps','[]'::jsonb);
+  tech_ready boolean := coalesce((base->>'technical_implementation_complete')::boolean,false);
+  verified_cmds int := coalesce((base->>'verified_owner_commands')::int,0);
+  activation_ready boolean := coalesce((act->>'ready_to_enable')::boolean,false);
+  attempt_ready boolean;
+  completion_ready boolean;
+  lane record;
+  ctl record;
+  active_grants bigint := 0;
+  post_proof_state_ok boolean := false;
+begin
+  -- First real proof requires technical readiness + fresh verified Owner command + activation gate.
+  -- It deliberately does NOT require evidence that only the first real proof can generate.
+  attempt_ready := tech_ready and verified_cmds > 0 and activation_ready;
+
+  select enabled,max_requests,network_request_count,dns_pinning_evidence_collected,
+         redirect_revalidation_evidence_collected,proof_completed,fixed_target_url
+    into lane
+  from public.pm_internet_transport_proof_lane_v1
+  where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF';
+
+  select owner_lockdown_active,production_network_enabled,mode
+    into ctl
+  from public.pm_owner_internet_gateway_control_shadow_v1
+  where control_key='CONTROLLED_INTERNET_GATEWAY';
+
+  select count(*) into active_grants
+  from public.pm_agent_capability_grants_v1
+  where grantee_agent_key='PAOJAI_OPERATIONS_AI'
+    and status='ACTIVE'
+    and 'PUBLIC_READ'=any(allowed_actions)
+    and (expires_at is null or expires_at>now());
+
+  post_proof_state_ok :=
+    lane is not null
+    and coalesce(lane.proof_completed,false)
+    and coalesce(lane.enabled,false)=false
+    and coalesce(lane.max_requests,0)=1
+    and coalesce(lane.network_request_count,0)=1
+    and lane.fixed_target_url='https://example.com/'
+    and coalesce(lane.dns_pinning_evidence_collected,false)
+    and coalesce(lane.redirect_revalidation_evidence_collected,false)
+    and ctl is not null
+    and coalesce(ctl.owner_lockdown_active,false)
+    and coalesce(ctl.production_network_enabled,true)=false
+    and ctl.mode='SHADOW_ONLY'
+    and active_grants=0;
+
+  -- Completion is evaluated after cleanup. It MUST NOT require the activation gate to remain open,
+  -- because successful finalize deliberately disables the lane, relocks Owner Lockdown and revokes the grant.
+  completion_ready := tech_ready
+    and jsonb_array_length(runtime_gaps)=0
+    and post_proof_state_ok;
+
+  return base || jsonb_build_object(
+    'mode','READ_ONLY_POST_FREEZE_READINESS_V2',
+    'ready_to_attempt_first_proof',attempt_ready,
+    'proof_completion_evidence_pending',jsonb_array_length(runtime_gaps)>0,
+    'post_proof_fail_closed_state_ok',post_proof_state_ok,
+    'ready_to_complete_proof',completion_ready,
+    'runtime_proof_gaps',runtime_gaps,
+    'active_public_read_grants',active_grants,
+    'canonical_target','https://example.com/',
+    'semantics','RUNTIME_EVIDENCE_GATES_COMPLETION_NOT_FIRST_ATTEMPT_AND_COMPLETION_DOES_NOT_REQUIRE_OPEN_ACTIVATION',
+    'production_mutation',false,
+    'authority_expansion',false,
+    'network_request_performed',coalesce(lane.network_request_count,0)>0
+  );
+end;
+$$;
+
+revoke all on function public.pm_internet_post_freeze_implementation_readiness_v2() from public, anon, authenticated;
+grant execute on function public.pm_internet_post_freeze_implementation_readiness_v2() to service_role;
+
+commit;
+
+-- POST-EXIT REVIEW REQUIREMENTS:
+-- 1. Do not replace v1 blindly. Compare current Manual + live functions first.
+-- 2. Owner Passkey remains required; this patch does not create or verify commands.
+-- 3. Activation gate remains authoritative for the first proof attempt.
+-- 4. DNS/redirect/runtime-concurrency evidence remains mandatory before proof completion.
+-- 5. Completion is checked after relock/revoke and therefore does not require activation to remain enabled.
+-- 6. General production network remains disabled throughout Mission #18.

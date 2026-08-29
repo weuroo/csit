@@ -1,0 +1,35 @@
+// PRE-STAGED ONLY. DO NOT DEPLOY DURING ACTIVE FEATURE FREEZE.
+// Mission #18 fail-closed promotion blocker for pinned-IP runtime evidence.
+// The proof executor must not be promoted until it proves the connected socket
+// is the exact validated/pinned IP and persists DNS answer-set provenance per leg.
+import fs from 'node:fs';
+
+const p=process.argv[2];
+if(!p) throw new Error('USAGE: node pinned_ip_runtime_evidence_static_check.mjs executor');
+const s=fs.readFileSync(p,'utf8');
+const failures=[];
+const req=(re,label)=>{if(!re.test(s))failures.push(label)};
+
+req(/remoteAddress/,'MISSING_ACTUAL_SOCKET_REMOTE_ADDRESS');
+req(/remoteFamily/,'MISSING_ACTUAL_SOCKET_REMOTE_FAMILY');
+req(/PINNED_IP_REMOTE_MISMATCH|REMOTE_ADDRESS_MISMATCH|CONNECTED_IP_MISMATCH/,'MISSING_FAIL_CLOSED_REMOTE_ADDRESS_MATCH');
+req(/canonicalIp\([^)]*remoteAddress[^)]*\).*===.*canonicalIp\([^)]*(selected_ip|selectedIp|chosenIp)/s,'MISSING_EXPLICIT_REMOTE_TO_SELECTED_EQUALITY');
+req(/dns_answer_set|validated_ips|resolved_ips/i,'MISSING_DNS_ANSWER_SET_EVIDENCE');
+req(/selected_ip|pinned_ip|chosen_ip/i,'MISSING_SELECTED_PINNED_IP_EVIDENCE');
+req(/transport_legs|transportLegs/,'MISSING_PER_LEG_TRANSPORT_EVIDENCE');
+req(/remote_address_matches_selected/,'MISSING_PER_LEG_REMOTE_MATCH_ATTESTATION');
+req(/redirect.*(fresh|two-read|stable|dns)|stablePublicDns\(current\.hostname\)/is,'MISSING_REDIRECT_DNS_REVALIDATION');
+req(/general_production_network_authorized\s*:\s*false/,'MISSING_GENERAL_NETWORK_FALSE_EVIDENCE');
+
+if(failures.length){
+  console.error(JSON.stringify({ok:false,promotion_blocked:true,failures},null,2));
+  process.exit(1);
+}
+console.log(JSON.stringify({ok:true,promotion_blocked:false,checks:[
+  'actual socket remoteAddress and remoteFamily are captured',
+  'actual remoteAddress must explicitly equal the selected validated IP',
+  'DNS answer set and selected pinned IP are persisted per transport leg',
+  'per-leg remote-address match attestation is persisted',
+  'followed redirect legs repeat DNS revalidation and pinned-IP verification',
+  'general production network remains explicitly unauthorized'
+]},null,2));

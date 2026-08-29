@@ -1,0 +1,51 @@
+// PRE-STAGED ONLY. DO NOT DEPLOY DURING FEATURE FREEZE.
+// Mission #18 proof-only executor contract.
+// Target artifact: pm-controlled-internet-executor-proof
+
+export const PROOF_CONTRACT = Object.freeze({
+  fixedTargetUrl: "https://example.com/",
+  maxRequests: 1,
+  agent: "PAOJAI_OPERATIONS_AI",
+  action: "PUBLIC_READ",
+  maxRedirects: 3,
+  sameHostRedirectOnly: true,
+  timeoutMs: 10_000,
+  maxResponseBytes: 1_048_576,
+  pinnedIpTlsRequired: true,
+  liveGrantRequired: true,
+  verifiedV3OwnerCommandRequired: true,
+  consumedNonceAndAllowedGatewayAuditRequired: true,
+  ownerLockdownMustBeOffForProofOnly: true,
+  generalProductionNetworkAuthorized: false,
+  atomicReservationBeforeDnsOrNetwork: true,
+  reservationPolicy: "FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE",
+  idempotentFinalizeRequired: true,
+  auditEveryOutcome: true,
+  returnBody: false,
+});
+
+/* Required execution order after Stabilization Exit and technical review:
+1. Validate exact request shape + fixed target https://example.com/. No caller-supplied alternate URL.
+2. Validate attested proof artifact hash/version.
+3. Validate VERIFIED v3 Owner command / consumed nonce / allowed gateway audit bound to exact target, max one request and TRANSPORT_PROOF_SINGLE_REQUEST.
+4. Validate bounded unlock <=120s; production_network_enabled must remain false.
+5. Validate exact-command-bound <=10-minute PAOJAI PUBLIC_READ grant with can_delegate=false.
+6. Run authority + contract + cross-binding + activation + concurrency/failure-policy + Central/Action/Guardian + Recovery gates.
+7. Atomically reserve the one request token BEFORE DNS/network.
+8. Resolve A/AAAA, validate all resolved IPs, re-resolve and require stable validated set.
+9. Use pinned-IP HTTPS connection preserving original hostname/SNI/TLS verification.
+10. On an observed redirect: same original host only, HTTPS only, <=3; re-run proof window + DNS/IP validation before next connect.
+11. Zero redirects are valid if the final response is bounded and the evidence records redirect_observed=false; never fabricate redirect connect-time evidence.
+12. Enforce full request timeout <=10s and response accumulation <=1MiB.
+13. Audit success/failure/timeout/redirect/size/TLS outcomes without protected content.
+14. Finalize idempotently. Failed attempt remains consumed.
+15. Immediately relock/revoke/expire, then run all post-proof regressions.
+
+Forbidden:
+- generic fetch() without pinned connect-time IP
+- caller-supplied signature_verified as authority
+- automatic retry after consumed attempt
+- credentials/downloads/code execution/external side effects/protected-data egress/cross-client context
+- enabling general Production network as part of proof
+- PM-owned substitute targets, aliases/wildcards, query-controlled redirects, or cross-host redirects
+*/
