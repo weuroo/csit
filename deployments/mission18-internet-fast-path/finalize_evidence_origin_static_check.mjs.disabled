@@ -1,55 +1,101 @@
 // PRE-STAGED ONLY. DO NOT RUN AS A DEPLOYMENT DURING FEATURE FREEZE.
 // Promotion blocker for Mission #18 finalize evidence provenance.
 //
-// Goal: prevent pm_internet_transport_proof_finalize_request_v1 from accepting
-// caller-asserted transport facts as sufficient proof of SUCCESS. A service-role
-// caller must not be able to fabricate network_request_performed / DNS / redirect /
-// bounded-response evidence and mark proof_completed=true without evidence that was
-// produced by the promoted proof-only executor for the exact consumed reservation.
+// This guard is deliberately cross-file-contamination resistant: SQL requirements
+// must be proven by the final SQL itself, executor requirements by the executor,
+// and artifact requirements by the attestation manifest. Keywords in one artifact
+// cannot satisfy a missing authority/evidence binding in another artifact.
 
 import fs from 'node:fs';
 
-const files = process.argv.slice(2);
-if (!files.length) {
-  console.error('USAGE: node finalize_evidence_origin_static_check.mjs.disabled <final-sql> <executor-source> [attestation-manifest]');
+const [finalSqlPath, executorPath, attestationPath, ...extra] = process.argv.slice(2);
+if (!finalSqlPath || !executorPath || !attestationPath) {
+  console.error('USAGE: node finalize_evidence_origin_static_check.mjs.disabled <final-sql> <executor-source> <attestation-manifest>');
   process.exit(2);
 }
-
-const text = files.map(f => fs.readFileSync(f, 'utf8')).join('\n\n');
-const fail = [];
-
-// Current unsafe shape: finalize directly derives success from p_evidence fields.
-const callerEvidenceParam = /pm_internet_transport_proof_finalize_request_v1[\s\S]*?p_evidence\s+jsonb/i.test(text);
-const callerNetworkFact = /p_evidence\s*->>\s*['"]network_request_performed['"]/i.test(text);
-const callerDnsFact = /p_evidence\s*->>\s*['"](?:dns_runtime_evidence_passed|dns_connect_time_verified)['"]/i.test(text);
-const callerRedirectFact = /p_evidence\s*->>\s*['"]redirect_(?:policy_verified|revalidation_satisfied)['"]/i.test(text);
-const callerBounds = /p_evidence\s*->>\s*['"](?:status|bytes|elapsed_ms)['"]/i.test(text);
-const callerSuccess = /success\s*:=\s*[\s\S]{0,1200}(?:network_ok|dns_ok|redirect_satisfied|bounds_ok)/i.test(text);
-
-if (callerEvidenceParam && callerNetworkFact && callerDnsFact && callerRedirectFact && callerBounds && callerSuccess) {
-  fail.push('CALLER_ASSERTED_TRANSPORT_EVIDENCE_CAN_DRIVE_SUCCESS');
-}
-
-// Required hardened shape. Naming is intentionally semantic, not one exact implementation:
-// finalization must bind the exact token to a server-side evidence record, executor identity/
-// artifact attestation, and a one-time finalize capability/nonce that cannot be supplied or
-// minted by arbitrary service-role callers. The DB must derive success facts from that bound
-// record rather than trusting p_evidence success booleans.
-const hasServerEvidenceLedger = /(transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)/i.test(text);
-const hasReservationBinding = /(request_token|reservation_id)[\s\S]{0,400}(?:evidence|attest)/i.test(text);
-const hasExecutorBinding = /(executor_artifact_sha|executor_attestation|proof_executor_identity|attested_executor)/i.test(text);
-const hasOneTimeFinalizeBinding = /(finalize_nonce|finalize_capability|single_use_finalize|consumed_finalize)/i.test(text);
-const derivesFromPersistedEvidence = /(select[\s\S]{0,900}(?:transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)|server_derived_evidence)/i.test(text);
-
-if (!hasServerEvidenceLedger) fail.push('SERVER_DERIVED_EVIDENCE_LEDGER_NOT_FOUND');
-if (!hasReservationBinding) fail.push('EXACT_RESERVATION_TO_EVIDENCE_BINDING_NOT_FOUND');
-if (!hasExecutorBinding) fail.push('ATTESTED_EXECUTOR_EVIDENCE_BINDING_NOT_FOUND');
-if (!hasOneTimeFinalizeBinding) fail.push('ONE_TIME_FINALIZE_BINDING_NOT_FOUND');
-if (!derivesFromPersistedEvidence) fail.push('FINALIZE_DOES_NOT_DERIVE_SUCCESS_FROM_PERSISTED_SERVER_EVIDENCE');
-
-if (fail.length) {
-  console.error(JSON.stringify({passed:false, promotion_blocked:true, reasons:fail}, null, 2));
+if (extra.length) {
+  console.error(JSON.stringify({passed:false,promotion_blocked:true,reasons:['UNEXPECTED_EXTRA_INPUTS']}, null, 2));
   process.exit(1);
 }
 
-console.log(JSON.stringify({passed:true, promotion_blocked:false, reasons:[]}, null, 2));
+const sql = fs.readFileSync(finalSqlPath, 'utf8');
+const executor = fs.readFileSync(executorPath, 'utf8');
+const attestation = fs.readFileSync(attestationPath, 'utf8');
+const fail = [];
+
+// -----------------------------------------------------------------------------
+// SQL authority boundary: finalize MUST NOT derive proof success from caller JSON.
+// These checks are intentionally scoped only to finalSqlPath.
+// -----------------------------------------------------------------------------
+const finalizeRegionMatch = sql.match(/create\s+or\s+replace\s+function\s+public\.pm_internet_transport_proof_finalize_request_v1[\s\S]*?(?=\ncreate\s+or\s+replace\s+function|\nrevoke\s+all\s+on\s+function|\ncommit\s*;|$)/i);
+const finalizeSql = finalizeRegionMatch?.[0] ?? '';
+if (!finalizeSql) fail.push('FINALIZE_FUNCTION_NOT_FOUND_IN_FINAL_SQL');
+
+const callerEvidenceParam = /\bp_evidence\s+jsonb\b/i.test(finalizeSql);
+const callerAuthoritativeFacts = /p_evidence\s*->>\s*['"](?:network_request_performed|dns_runtime_evidence_passed|dns_connect_time_verified|redirect_policy_verified|redirect_revalidation_satisfied|status|bytes|elapsed_ms|fixed_target_url|general_production_network_authorized)['"]/i.test(finalizeSql);
+const callerDrivenSuccess = /(?:success|proof_completed|finalize_success_criteria_passed)[\s\S]{0,1800}p_evidence|p_evidence[\s\S]{0,1800}(?:success\s*:=|proof_completed\s*=|finalize_success_criteria_passed)/i.test(finalizeSql);
+if (callerEvidenceParam && (callerAuthoritativeFacts || callerDrivenSuccess)) {
+  fail.push('CALLER_ASSERTED_TRANSPORT_EVIDENCE_CAN_DRIVE_SUCCESS');
+}
+
+// Final SQL must own the evidence ledger and exact reservation binding.
+const sqlHasLedger = /create\s+table[\s\S]{0,300}(?:transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)|(?:transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)[\s\S]{0,300}request_token/i.test(sql);
+const sqlHasReservationBinding = /(?:request_token|reservation_id)[\s\S]{0,700}(?:evidence_session|evidence_id|proof_evidence|executor_evidence|transport_proof_runtime_evidence)/i.test(sql);
+const sqlHasExecutorBinding = /(?:executor_artifact_sha|executor_attestation|proof_executor_identity|attested_executor|executor_identity)[\s\S]{0,700}(?:request_token|reservation_id|evidence)/i.test(sql);
+const sqlHasOneTimeFinalize = /(?:finalize_nonce|finalize_capability|single_use_finalize|consumed_finalize|finalize_consumed_at)/i.test(sql);
+const sqlConsumesFinalize = /(?:finalize_nonce|finalize_capability)[\s\S]{0,900}(?:consum|used_at|finalized_at)|(?:consumed_finalize|finalize_consumed_at)[\s\S]{0,500}(?:update|insert)/i.test(sql);
+const sqlReadsPersistedEvidence = /select[\s\S]{0,1200}(?:transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)/i.test(finalizeSql);
+const sqlBindsPersistedEvidenceToToken = /where[\s\S]{0,700}(?:request_token|reservation_id)[\s=]+(?:p_request_token|r\.request_token|reservation)/i.test(finalizeSql);
+const sqlSuccessFromPersistedRow = /(?:success\s*:=|proof_completed\s*=)[\s\S]{0,1800}(?:evidence_row|ledger|persisted|server_derived|runtime_evidence|executor_evidence)/i.test(finalizeSql);
+
+if (!sqlHasLedger) fail.push('FINAL_SQL_SERVER_DERIVED_EVIDENCE_LEDGER_NOT_FOUND');
+if (!sqlHasReservationBinding) fail.push('FINAL_SQL_EXACT_RESERVATION_EVIDENCE_BINDING_NOT_FOUND');
+if (!sqlHasExecutorBinding) fail.push('FINAL_SQL_ATTESTED_EXECUTOR_BINDING_NOT_FOUND');
+if (!sqlHasOneTimeFinalize) fail.push('FINAL_SQL_ONE_TIME_FINALIZE_BINDING_NOT_FOUND');
+if (!sqlConsumesFinalize) fail.push('FINAL_SQL_ONE_TIME_FINALIZE_CONSUMPTION_NOT_FOUND');
+if (!sqlReadsPersistedEvidence) fail.push('FINALIZE_DOES_NOT_READ_PERSISTED_SERVER_EVIDENCE');
+if (!sqlBindsPersistedEvidenceToToken) fail.push('FINALIZE_PERSISTED_EVIDENCE_NOT_BOUND_TO_EXACT_TOKEN');
+if (!sqlSuccessFromPersistedRow) fail.push('FINALIZE_SUCCESS_NOT_DERIVED_FROM_PERSISTED_EVIDENCE_ROW');
+
+// -----------------------------------------------------------------------------
+// Executor boundary: exact promoted executor must write bound evidence and use a
+// one-time finalize capability. Merely constructing p_evidence is not sufficient.
+// -----------------------------------------------------------------------------
+const executorWritesLedger = /(?:record|persist|append|write|submit)[A-Za-z0-9_]*.*(?:transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)|(?:transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence).*\.(?:insert|upsert|rpc)/is.test(executor);
+const executorUsesFinalizeBinding = /(?:finalize_nonce|finalize_capability|single_use_finalize)/i.test(executor);
+const executorCarriesIdentity = /(?:executor_artifact_sha|executor_attestation|proof_executor_identity|attested_executor|executor_identity)/i.test(executor);
+const executorPassesCallerSuccessEvidence = /pm_internet_transport_proof_finalize_request_v1[\s\S]{0,1600}(?:network_request_performed|dns_connect_time_verified|redirect_revalidation_satisfied|status|bytes|elapsed_ms)/i.test(executor);
+
+if (!executorWritesLedger) fail.push('EXECUTOR_DOES_NOT_PERSIST_SERVER_BOUND_EVIDENCE');
+if (!executorUsesFinalizeBinding) fail.push('EXECUTOR_ONE_TIME_FINALIZE_BINDING_NOT_FOUND');
+if (!executorCarriesIdentity) fail.push('EXECUTOR_ATTESTED_IDENTITY_BINDING_NOT_FOUND');
+if (executorPassesCallerSuccessEvidence) fail.push('EXECUTOR_STILL_SUPPLIES_CALLER_SUCCESS_EVIDENCE_TO_FINALIZE');
+
+// -----------------------------------------------------------------------------
+// Attestation boundary: manifest must bind an exact executor artifact identity to
+// the evidence/finalize protocol. Generic prose mentioning "attestation" is not enough.
+// -----------------------------------------------------------------------------
+const attestationHasExactDigest = /(?:sha-?256|git\s+blob|artifact\s+sha)[^\n]{0,160}\b[a-f0-9]{40,64}\b/i.test(attestation);
+const attestationNamesExecutor = /proof_executor_candidate\.ts|proof[-_ ]only executor|executor artifact/i.test(attestation);
+const attestationBindsEvidenceProtocol = /(?:evidence ledger|runtime evidence|executor_evidence|transport_proof_runtime_evidence)[\s\S]{0,700}(?:finalize_nonce|finalize_capability|request_token|reservation)/i.test(attestation);
+
+if (!attestationHasExactDigest) fail.push('ATTESTATION_EXACT_EXECUTOR_DIGEST_NOT_FOUND');
+if (!attestationNamesExecutor) fail.push('ATTESTATION_EXECUTOR_ARTIFACT_NOT_IDENTIFIED');
+if (!attestationBindsEvidenceProtocol) fail.push('ATTESTATION_NOT_BOUND_TO_EVIDENCE_FINALIZE_PROTOCOL');
+
+if (fail.length) {
+  console.error(JSON.stringify({
+    passed:false,
+    promotion_blocked:true,
+    cross_file_contamination_resistant:true,
+    reasons:[...new Set(fail)]
+  }, null, 2));
+  process.exit(1);
+}
+
+console.log(JSON.stringify({
+  passed:true,
+  promotion_blocked:false,
+  cross_file_contamination_resistant:true,
+  reasons:[]
+}, null, 2));
