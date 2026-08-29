@@ -1,0 +1,55 @@
+// PRE-STAGED ONLY. DO NOT RUN AS A DEPLOYMENT DURING FEATURE FREEZE.
+// Promotion blocker for Mission #18 finalize evidence provenance.
+//
+// Goal: prevent pm_internet_transport_proof_finalize_request_v1 from accepting
+// caller-asserted transport facts as sufficient proof of SUCCESS. A service-role
+// caller must not be able to fabricate network_request_performed / DNS / redirect /
+// bounded-response evidence and mark proof_completed=true without evidence that was
+// produced by the promoted proof-only executor for the exact consumed reservation.
+
+import fs from 'node:fs';
+
+const files = process.argv.slice(2);
+if (!files.length) {
+  console.error('USAGE: node finalize_evidence_origin_static_check.mjs.disabled <final-sql> <executor-source> [attestation-manifest]');
+  process.exit(2);
+}
+
+const text = files.map(f => fs.readFileSync(f, 'utf8')).join('\n\n');
+const fail = [];
+
+// Current unsafe shape: finalize directly derives success from p_evidence fields.
+const callerEvidenceParam = /pm_internet_transport_proof_finalize_request_v1[\s\S]*?p_evidence\s+jsonb/i.test(text);
+const callerNetworkFact = /p_evidence\s*->>\s*['"]network_request_performed['"]/i.test(text);
+const callerDnsFact = /p_evidence\s*->>\s*['"](?:dns_runtime_evidence_passed|dns_connect_time_verified)['"]/i.test(text);
+const callerRedirectFact = /p_evidence\s*->>\s*['"]redirect_(?:policy_verified|revalidation_satisfied)['"]/i.test(text);
+const callerBounds = /p_evidence\s*->>\s*['"](?:status|bytes|elapsed_ms)['"]/i.test(text);
+const callerSuccess = /success\s*:=\s*[\s\S]{0,1200}(?:network_ok|dns_ok|redirect_satisfied|bounds_ok)/i.test(text);
+
+if (callerEvidenceParam && callerNetworkFact && callerDnsFact && callerRedirectFact && callerBounds && callerSuccess) {
+  fail.push('CALLER_ASSERTED_TRANSPORT_EVIDENCE_CAN_DRIVE_SUCCESS');
+}
+
+// Required hardened shape. Naming is intentionally semantic, not one exact implementation:
+// finalization must bind the exact token to a server-side evidence record, executor identity/
+// artifact attestation, and a one-time finalize capability/nonce that cannot be supplied or
+// minted by arbitrary service-role callers. The DB must derive success facts from that bound
+// record rather than trusting p_evidence success booleans.
+const hasServerEvidenceLedger = /(transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)/i.test(text);
+const hasReservationBinding = /(request_token|reservation_id)[\s\S]{0,400}(?:evidence|attest)/i.test(text);
+const hasExecutorBinding = /(executor_artifact_sha|executor_attestation|proof_executor_identity|attested_executor)/i.test(text);
+const hasOneTimeFinalizeBinding = /(finalize_nonce|finalize_capability|single_use_finalize|consumed_finalize)/i.test(text);
+const derivesFromPersistedEvidence = /(select[\s\S]{0,900}(?:transport_proof_(?:runtime_)?evidence|proof_evidence_ledger|executor_evidence)|server_derived_evidence)/i.test(text);
+
+if (!hasServerEvidenceLedger) fail.push('SERVER_DERIVED_EVIDENCE_LEDGER_NOT_FOUND');
+if (!hasReservationBinding) fail.push('EXACT_RESERVATION_TO_EVIDENCE_BINDING_NOT_FOUND');
+if (!hasExecutorBinding) fail.push('ATTESTED_EXECUTOR_EVIDENCE_BINDING_NOT_FOUND');
+if (!hasOneTimeFinalizeBinding) fail.push('ONE_TIME_FINALIZE_BINDING_NOT_FOUND');
+if (!derivesFromPersistedEvidence) fail.push('FINALIZE_DOES_NOT_DERIVE_SUCCESS_FROM_PERSISTED_SERVER_EVIDENCE');
+
+if (fail.length) {
+  console.error(JSON.stringify({passed:false, promotion_blocked:true, reasons:fail}, null, 2));
+  process.exit(1);
+}
+
+console.log(JSON.stringify({passed:true, promotion_blocked:false, reasons:[]}, null, 2));
