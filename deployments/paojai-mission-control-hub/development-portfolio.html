@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d2233">
+<title>Paojai Development Portfolio</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;background:#eef4f6;color:#173044;font-family:system-ui,-apple-system,"Noto Sans Thai",sans-serif}.app{max-width:1100px;margin:auto;padding:14px 12px 48px}.hero{background:linear-gradient(145deg,#102b3e,#173f54);color:#fff;border-radius:24px;padding:18px;box-shadow:0 10px 30px #102b3e26}.eyebrow{font-size:12px;opacity:.72;letter-spacing:.04em}.hero h1{font-size:clamp(28px,7vw,44px);line-height:1.04;margin:7px 0}.hero p{margin:0;opacity:.8;font-size:13px;line-height:1.5}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:12px}.metric{background:#fff;border:1px solid #d7e4e8;border-radius:17px;padding:12px}.metric b{display:block;font-size:25px}.metric span{font-size:11px;color:#6d8592}.toolbar{display:flex;gap:8px;align-items:center;margin:13px 0;overflow:auto}.chip{white-space:nowrap;border:1px solid #cadce3;background:#fff;color:#365566;border-radius:999px;padding:8px 12px;font-weight:800;font-size:12px}.chip.on{background:#173044;color:#fff;border-color:#173044}.card{background:#fff;border:1px solid #d8e5e9;border-radius:20px;padding:13px;margin-top:10px;box-shadow:0 5px 18px #1730440b}.sectionTitle{font-size:20px;font-weight:900;margin:3px 0 9px}.projectGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.project{border:1px solid #d9e5e8;border-radius:18px;padding:13px;background:#fbfdfd}.project.p10,.project.p9{border-width:2px}.top{display:flex;justify-content:space-between;gap:9px;align-items:flex-start}.title{font-size:18px;font-weight:900;line-height:1.15}.sub{font-size:12px;color:#6b8390;line-height:1.4;margin-top:5px}.badge{border-radius:999px;padding:4px 8px;font-size:10px;font-weight:900;background:#e6f1f4;color:#31576a;white-space:nowrap}.badge.blocked{background:#fde7e7;color:#9a3f3f}.badge.owner{background:#fff2d9;color:#8a5d18}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px}.stat{background:#f2f7f8;border-radius:11px;padding:8px}.stat b{font-size:17px;display:block}.stat span{font-size:9px;color:#78909b}.states{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}.state{font-size:9px;font-weight:800;border:1px solid #d7e4e7;border-radius:999px;padding:3px 6px;color:#56707d}.state.BLOCKED,.state.WAITING_CEO{background:#fdeaea;color:#963d3d;border-color:#f4caca}.state.DEVELOPING,.state.TESTING,.state.VERIFYING_PRODUCTION{background:#e7f4eb;color:#2d7044}.state.QUEUED,.state.ANALYZING,.state.ACTIVE{background:#e7f1fa;color:#346786}.priority{margin-top:9px;font-size:10px;color:#6f8895}.health{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.healthBox{background:#f5f9fa;border-radius:14px;padding:11px}.healthBox b{font-size:20px;display:block}.healthBox span{font-size:10px;color:#718a96}.devRows{display:grid;grid-template-columns:1fr 1fr;gap:10px}.list{display:flex;flex-direction:column;gap:6px}.row{display:flex;justify-content:space-between;gap:10px;padding:8px 10px;background:#f5f9fa;border-radius:12px;font-size:12px}.row b{font-variant-numeric:tabular-nums}.notice{font-size:12px;line-height:1.5;background:#fff7dc;border:1px solid #ecd58c;color:#755c1c;border-radius:14px;padding:10px;margin-top:10px}.footer{font-size:11px;color:#718995;margin-top:12px;text-align:center}.loading{padding:30px;text-align:center;color:#6a8290}@media(max-width:720px){.metrics{grid-template-columns:1fr 1fr}.projectGrid,.devRows{grid-template-columns:1fr}.health{grid-template-columns:1fr 1fr}.app{padding:10px 10px 40px}.hero{border-radius:20px;padding:16px}.title{font-size:17px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="hero">
+    <div class="eyebrow">PM AGENCY INTELLIGENCE OS · OWNER VIEW</div>
+    <h1>🧭 Development Portfolio</h1>
+    <p>เห็นทุกโครงการที่ระบบกำลังพัฒนาในมุมเดียว — Project → Mission → Blocker → Owner Decision → Next Development Frontier โดยไม่จำกัดอยู่แค่ Living World</p>
+  </div>
+  <div class="metrics">
+    <div class="metric"><b id="projectCount">—</b><span>Executive Projects</span></div>
+    <div class="metric"><b id="activeMission">—</b><span>Active Missions</span></div>
+    <div class="metric"><b id="blockedMission">—</b><span>Blocked / Waiting</span></div>
+    <div class="metric"><b id="devRecords">—</b><span>Development Records</span></div>
+  </div>
+  <div class="toolbar" id="filters">
+    <button class="chip on" data-filter="ALL">ทั้งหมด</button>
+    <button class="chip" data-filter="CORE_SYSTEM">Core</button>
+    <button class="chip" data-filter="PLATFORM">Platform</button>
+    <button class="chip" data-filter="CAPABILITY">Capability</button>
+    <button class="chip" data-filter="BUSINESS">Business</button>
+    <button class="chip" data-filter="MOONSHOT_RND">Moonshot</button>
+  </div>
+  <div class="card">
+    <div class="sectionTitle">โครงการทั้งหมด</div>
+    <div id="projects" class="projectGrid"><div class="loading">กำลังอ่าน Live Portfolio…</div></div>
+  </div>
+  <div class="card">
+    <div class="sectionTitle">System Development Health</div>
+    <div class="health">
+      <div class="healthBox"><b id="archObjects">—</b><span>Architecture Objects</span></div>
+      <div class="healthBox"><b id="canonicalFns">—</b><span>Canonical Functions</span></div>
+      <div class="healthBox"><b id="depReviews">—</b><span>Dependency Reviews</span></div>
+      <div class="healthBox"><b id="valueEvidence">—</b><span>Value Evidence</span></div>
+      <div class="healthBox"><b id="autoArch">—</b><span>Autonomous Arch Change</span></div>
+      <div class="healthBox"><b id="measuredAt">—</b><span>Measured</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="sectionTitle">Development Universe</div>
+    <div class="devRows">
+      <div><b>ตามสถานะ</b><div id="byStatus" class="list" style="margin-top:8px"></div></div>
+      <div><b>ตามประเภทงาน</b><div id="byType" class="list" style="margin-top:8px"></div></div>
+    </div>
+    <div class="notice">หน้านี้เป็น Public-safe read-only จึงแสดงภาพรวมงานพัฒนาโดยไม่เปิดเผย Client Data, Secret หรือ Internal sensitive payload หากมีงานใหม่ที่ยังไม่ถูกจัดเข้า Executive Project ระบบควรเก็บไว้ใน Development Universe จนกว่าจะจัดเข้าพอร์ตอย่างชัดเจน</div>
+  </div>
+  <div class="footer" id="footer">PUBLIC_SAFE_READ_ONLY · ไม่มี write / authority / production action</div>
+</div>
+<script>
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-development-portfolio-public-v1';let DATA=null,FILTER='ALL';
+const q=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function renderProjects(){const list=(DATA.projects||[]).filter(p=>FILTER==='ALL'||p.project_type===FILTER);q('#projects').innerHTML=list.map(p=>{const st=Object.entries(p.mission_states||{}).map(([k,v])=>`<span class="state ${esc(k)}">${esc(k)} ${v}</span>`).join('')||'<span class="state">NO MISSION MAPPING</span>';const badge=p.blocked_missions?`<span class="badge blocked">⚠ ${p.blocked_missions} blocked</span>`:p.needs_owner?`<span class="badge owner">Owner ${p.needs_owner}</span>`:`<span class="badge">${esc(p.status)}</span>`;return `<div class="project p${p.priority}"><div class="top"><div><div class="title">${esc(p.title)}</div><div class="sub">${esc(p.subtitle)}</div></div>${badge}</div><div class="stats"><div class="stat"><b>${p.priority}</b><span>Priority</span></div><div class="stat"><b>${p.mission_count}</b><span>Missions</span></div><div class="stat"><b>${p.active_missions}</b><span>Active</span></div><div class="stat"><b>${p.blocked_missions}</b><span>Blocked</span></div></div><div class="states">${st}</div><div class="priority">${esc(p.project_type)} · ${p.project_key}</div></div>`}).join('')||'<div class="loading">ไม่พบโครงการในหมวดนี้</div>'}
+function renderMap(el,obj){const entries=Object.entries(obj||{}).sort((a,b)=>b[1]-a[1]);q(el).innerHTML=entries.slice(0,12).map(([k,v])=>`<div class="row"><span>${esc(k)}</span><b>${v}</b></div>`).join('')||'<div class="row"><span>ไม่มีข้อมูล</span><b>0</b></div>'}
+async function load(){try{const r=await fetch(API,{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw new Error();DATA=d;const projects=d.projects||[];q('#projectCount').textContent=projects.length;q('#activeMission').textContent=projects.reduce((s,p)=>s+p.active_missions,0);q('#blockedMission').textContent=projects.reduce((s,p)=>s+p.blocked_missions,0);q('#devRecords').textContent=d.portfolio_health?.development_records??d.development_summary?.total??'—';q('#archObjects').textContent=d.portfolio_health?.architecture_objects??'—';q('#canonicalFns').textContent=d.portfolio_health?.canonical_functions??'—';q('#depReviews').textContent=d.portfolio_health?.dependency_reviews_required??'—';q('#valueEvidence').textContent=d.portfolio_health?.fact_value_evidence_rows??'—';q('#autoArch').textContent=d.portfolio_health?.autonomous_architecture_change_enabled?'ON':'OFF';q('#measuredAt').textContent=d.portfolio_health?.measured_at?new Date(d.portfolio_health.measured_at).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}):'—';renderMap('#byStatus',d.development_summary?.by_status);renderMap('#byType',d.development_summary?.by_type);q('#footer').textContent=`${d.version} · ${d.mode} · อัปเดต ${new Date(d.measured_at).toLocaleString('th-TH')}`;renderProjects()}catch(e){q('#projects').innerHTML='<div class="loading">โหลด Live Portfolio ไม่สำเร็จ</div>'}}
+document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{FILTER=b.dataset.filter;document.querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===b));if(DATA)renderProjects()});load();
+</script>
+</body></html>
