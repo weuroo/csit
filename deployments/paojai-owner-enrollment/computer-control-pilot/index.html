@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#07111f"><title>อนุมัติ Minimal Control Pilot — Paojai Computer</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#07111f;color:#eef7ff;padding:20px}.card{width:min(700px,100%);margin:0 auto;background:#0d1a2c;border:1px solid #20334a;border-radius:24px;padding:26px;box-shadow:0 20px 80px #0007}.ey{color:#73d8ff;letter-spacing:.14em;font-size:12px;font-weight:800;text-transform:uppercase}h1{font-size:clamp(28px,7vw,42px);line-height:1.1;margin:10px 0 14px}p{color:#a7b7ca;line-height:1.6}.gate{border:1px solid #28445f;background:#0a1624;border-radius:16px;padding:15px;margin:16px 0;font-size:13px;line-height:1.75}.gate b{color:#6ee7b7}.risk{color:#ffd795}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;font-size:12px}.warn{border:1px solid #735d20;background:#211b09;border-radius:16px;padding:14px;color:#ffe7a6;line-height:1.55;font-size:13px}button{width:100%;min-height:62px;border:0;border-radius:16px;background:#eef7ff;color:#07111f;font-size:18px;font-weight:800;margin-top:16px;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}.st{margin-top:18px;min-height:48px;color:#a7b7ca;white-space:pre-wrap;line-height:1.5}.ok{color:#6ee7b7}.err{color:#fda4af}.result{display:none;margin-top:18px;border:1px solid #28533f;background:#0a1c18;border-radius:16px;padding:16px}.result.show{display:block}.pill{display:inline-block;border:1px solid #28445f;border-radius:999px;padding:5px 9px;margin:3px 4px 3px 0;font-size:11px;color:#bcd0e4}.small{font-size:12px;color:#6f8298;margin-top:18px;line-height:1.6}
+</style></head>
+<body><main class="card">
+<div class="ey">Sovereign Owner Security Root · Minimal Reversible Control Pilot</div>
+<h1>อนุมัติ Control Pilot สำหรับคอมเครื่องที่ 2</h1>
+<p>Face ID / Passkey ครั้งนี้อนุมัติ <strong>การขยับเมาส์แบบ one-shot เพียงครั้งเดียว</strong> เพื่อพิสูจน์ actuation จริงหลัง Read-only Authorized Surface ผ่านแล้ว โดยระบบต้องคืนเมาส์กลับตำแหน่งเดิมอัตโนมัติ</p>
+<div class="gate">
+<b>อุปกรณ์เป้าหมาย</b><br><span class="mono">computer_35070e6e7ec44bac6b69d27f35e38c3d</span><br><br>
+<b>Scope</b> COMPUTER_MINIMAL_CONTROL_PILOT_V1<br>
+<b>Capability</b> MOUSE_MOVE_REVERSIBLE_TEST (PILOT / HIGH)<br>
+<b>Action</b> MOVE_CURSOR_AND_RESTORE<br>
+<b>Risk</b> <span class="risk">HIGH — เป็นการควบคุมเมาส์จริง แม้ขอบเขตเล็กมาก</span><br>
+<b>ขยับสูงสุด</b> 8 pixels · <b>คืนตำแหน่ง</b> ภายใน 500 ms<br>
+<b>จำนวน Action</b> 1 ครั้งเท่านั้น · <b>Session</b> 10 นาที<br>
+<b>Server Breaker Lease</b> สูงสุด 15 วินาที และมี watchdog re-close อัตโนมัติ<br>
+<b>Local Stop Recovery</b> สูงสุด 1 ครั้ง
+</div>
+<div class="warn"><b>ไม่อนุญาต:</b> Click/Mouse buttons, Keyboard, Screen Capture, Clipboard, User-file content, Secrets, App Control, Arbitrary Shell, LAN discovery, Production execution หรือสิทธิ์ควบคุมแบบ persistent</div>
+<div style="margin-top:14px"><span class="pill">can_delegate=false</span><span class="pill">exact device</span><span class="pill">one-time nonce</span><span class="pill">anti-replay</span><span class="pill">breaker TTL ≤15s</span><span class="pill">auto-disable after pilot</span><span class="pill">fail closed</span></div>
+<button id="go">อนุมัติ Minimal Control Pilot ด้วย Face ID / Passkey</button>
+<div id="st" class="st">พร้อมตรวจ Read-only proof, Security Root, Release Gate, Circuit Breaker และ exact capability contract เมื่อคุณกดปุ่ม</div>
+<section id="result" class="result"><b>✅ Minimal Control Pilot Session พร้อมใช้งาน</b><p>Session อายุ 10 นาที ให้กลับไปคอมเครื่องเดิมแล้วรัน Windows Minimal Control Pilot Launcher v0.7.0 หนึ่งครั้ง โดยอย่าแตะเมาส์ระหว่างการทดสอบสั้น ๆ</p></section>
+<div class="small">ไม่มีการขอ password · ไม่มี passkey private material · ไม่มี recovery secret · ไม่มี persistent Owner session<br>การอนุมัตินี้ไม่ใช่ general mouse/keyboard/app authority และ Production execution ยังคงปิด</div>
+</main>
+<script type="module">
+import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-computer-minimal-control-pilot-approval';
+const btn=document.getElementById('go'),st=document.getElementById('st'),result=document.getElementById('result');
+const set=(t,c='')=>{st.textContent=t;st.className='st '+c};
+async function post(body){const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok||d?.ok===false){const e=new Error(d?.error||`HTTP_${r.status}`);e.data=d;throw e}return d}
+btn.onclick=async()=>{try{btn.disabled=true;result.classList.remove('show');set('กำลังตรวจ Read-only Authorized Surface, Security Root, Device State, Circuit Breaker และ Capability Contract…');const o=await post({action:'options'});if(o?.scope!=='COMPUTER_MINIMAL_CONTROL_PILOT_V1'||o?.risk!=='HIGH'||o?.capability!=='MOUSE_MOVE_REVERSIBLE_TEST'||Number(o?.maxDeltaPixels)!==8||Number(o?.restoreWithinMs)!==500||Number(o?.maxActions)!==1||Number(o?.sessionMinutes)!==10)throw new Error('SERVER_SCOPE_MISMATCH');set('กรุณายืนยัน Face ID / Passkey สำหรับ exact one-shot mouse-move pilot…');const credential=await startAuthentication({optionsJSON:o.options});set('กำลังตรวจ Passkey, one-time nonce และ Owner Command Gateway…');const v=await post({action:'verify',challengeId:o.challengeId,credential});if(!v?.verified||v?.scope!=='COMPUTER_MINIMAL_CONTROL_PILOT_V1'||v?.capability!=='MOUSE_MOVE_REVERSIBLE_TEST'||Number(v?.maxDeltaPixels)!==8||Number(v?.restoreWithinMs)!==500||Number(v?.maxActions)!==1||v?.productionExecution!==false||v?.persistentExecutionAuthority!==false||v?.sensorAuthority!==false)throw new Error('CONTROL_PILOT_READBACK_UNSAFE');result.classList.add('show');set('✅ Minimal Control Pilot Authorized — General Control และ Production Execution ยังคงปิด','ok');btn.textContent='Minimal Control Pilot Authorized'}catch(e){btn.disabled=false;result.classList.remove('show');set('ไม่สำเร็จ: '+(e?.message||String(e))+'\nระบบหยุดแบบ Fail Closed และไม่ได้เปิดสิทธิ์ควบคุมคอม','err')}};
+</script></body></html>
