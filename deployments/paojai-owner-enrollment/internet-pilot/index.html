@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#07111f"><title>Paojai Bounded Internet Pilot</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#07111f;color:#eef7ff;display:grid;place-items:center;padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}.card{width:min(620px,100%);background:#0d1a2c;border:1px solid #20334a;border-radius:24px;padding:26px}.ey{color:#73d8ff;letter-spacing:.16em;font-size:12px;font-weight:800;text-transform:uppercase}h1{font-size:clamp(30px,7vw,42px);margin:10px 0 12px}p{color:#a7b7ca;line-height:1.65}.scope{border:1px solid #28445f;background:#0a1624;border-radius:16px;padding:15px;margin:18px 0;font-size:14px;line-height:1.7}.scope b{color:#6ee7b7}.no{color:#fda4af}.yes{color:#6ee7b7}button{width:100%;min-height:58px;border:0;border-radius:16px;background:#eef7ff;color:#07111f;font-size:18px;font-weight:800;margin-top:10px}button:disabled{opacity:.55}.st{margin-top:18px;min-height:54px;color:#a7b7ca;white-space:pre-wrap;line-height:1.55}.ok{color:#6ee7b7}.err{color:#fda4af}.result{display:none;margin-top:18px;border:1px solid #28533f;background:#0a1c18;border-radius:16px;padding:16px;line-height:1.65}.result.show{display:block}.small{font-size:12px;color:#6f8298;margin-top:18px}.metric{display:grid;grid-template-columns:1fr auto;gap:8px;border-top:1px solid #214032;padding:9px 0}.metric:first-child{border-top:0}.metric span:last-child{font-weight:800;color:#d8f8e8}
+</style>
+</head>
+<body><main class="card">
+<div class="ey">Sovereign Owner · Bounded Internet Proof</div>
+<h1>เปิดทดสอบ Internet ให้พอใจ 1 ครั้ง</h1>
+<p>ยืนยันด้วย Face ID / Passkey หนึ่งครั้ง แล้วระบบจะเปิดช่องทางชั่วคราวแบบจำกัดมาก ทำ transport proof ไปยังปลายทางคงที่ จากนั้นล็อกกลับและถอนสิทธิ์อัตโนมัติ</p>
+<div class="scope"><b>อนุญาต:</b> PAOJAI_OPERATIONS_AI · PUBLIC_READ · <code>https://example.com/</code> · สูงสุด 1 request<br><span class="yes">✓</span> HTTPS + pinned-IP TLS · timeout 10 วินาที · response สูงสุด 1 MiB · audit<br><span class="no">✕</span> ไม่มี credential · ไม่มี download · ไม่มี code execution · ไม่มี external side effect · ไม่มี Client Data · ห้าม delegate · ไม่เปิด General Internet Authority</div>
+<button id="go">ยืนยัน Face ID และทดสอบ Internet 1 ครั้ง</button>
+<div id="st" class="st">พร้อมขอ Fresh Owner Approval</div>
+<section id="result" class="result">
+  <b>✅ Bounded Internet Proof เสร็จแล้ว</b>
+  <div id="metrics" style="margin-top:12px"></div>
+  <p class="small">หลังจบ proof ระบบต้องกลับเป็น Owner Lockdown และ productionNetworkEnabled=false โดยอัตโนมัติ</p>
+</section>
+<div class="small">PM Agency Intelligence OS · Internet Pilot v1 · isolated no-overwrite route</div>
+</main>
+<script type="module">
+import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-owner-internet-pilot-approval-shadow';
+const btn=document.getElementById('go'),st=document.getElementById('st'),result=document.getElementById('result'),metrics=document.getElementById('metrics');
+const set=(t,c='')=>{st.textContent=t;st.className='st '+c};
+async function post(body){const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok||d?.ok===false){const e=new Error(d?.error||`HTTP_${r.status}`);e.detail=d;throw e}return d}
+function row(k,v){const d=document.createElement('div');d.className='metric';const a=document.createElement('span');a.textContent=k;const b=document.createElement('span');b.textContent=String(v);d.append(a,b);metrics.append(d)}
+btn.onclick=async()=>{try{
+  btn.disabled=true;result.classList.remove('show');metrics.textContent='';
+  set('กำลังตรวจ Technical Readiness และสร้าง one-time challenge…');
+  const o=await post({action:'options'});
+  set('กรุณายืนยัน Face ID / Passkey…');
+  const credential=await startAuthentication({optionsJSON:o.options});
+  set('Owner ยืนยันแล้ว — ระบบกำลังทำ bounded unlock → one-request proof → relock…');
+  const v=await post({action:'verify',challengeId:o.challengeId,credential});
+  if(!v?.verified||!v?.proofCompleted)throw new Error('PROOF_NOT_COMPLETED');
+  const p=v.proof||{};
+  row('Network request',p.networkRequestPerformed===true?'1 bounded request':'ไม่พบ');
+  row('HTTP status',p.status??'—');
+  row('Bytes',p.bytes??'—');
+  row('Redirects',p.redirects??'—');
+  row('Elapsed',p.elapsedMs!=null?`${p.elapsedMs} ms`:'—');
+  row('Transport',p.transport??'—');
+  row('Owner Lockdown',p.ownerLockdownRestored===true?'RESTORED':'ตรวจไม่พบ');
+  row('Production Network',p.productionNetworkEnabled===false?'OFF หลัง proof':'ผิดเงื่อนไข');
+  result.classList.add('show');
+  set('✅ Proof สำเร็จ — ระบบล็อกกลับและถอนสิทธิ์ชั่วคราวแล้ว','ok');
+  btn.style.display='none';
+}catch(e){
+  const d=e?.detail||{};let msg=e?.message||String(e);
+  if(d?.readiness?.implementation_gap_count>0)msg+='\nImplementation gaps: '+d.readiness.implementation_gap_count;
+  set('ไม่สำเร็จ: '+msg+'\nระบบยังคง Fail Closed และไม่เปิด General Internet','err');btn.disabled=false;
+}};
+</script></body></html>
