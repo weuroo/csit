@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#07111f"><title>อนุมัติ Bounded Proof Session — Paojai Computer</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#07111f;color:#eef7ff;display:grid;place-items:center;padding:20px}.card{width:min(700px,100%);background:#0d1a2c;border:1px solid #20334a;border-radius:24px;padding:26px;box-shadow:0 20px 80px #0007}.ey{color:#73d8ff;letter-spacing:.14em;font-size:12px;font-weight:800;text-transform:uppercase}h1{font-size:clamp(28px,7vw,42px);line-height:1.1;margin:10px 0 14px}p{color:#a7b7ca;line-height:1.6}.gate{border:1px solid #28445f;background:#0a1624;border-radius:16px;padding:15px;margin:16px 0;font-size:13px;line-height:1.75}.gate b{color:#6ee7b7}.risk{color:#ffd795}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;font-size:12px}.warn{border:1px solid #735d20;background:#211b09;border-radius:16px;padding:14px;color:#ffe7a6;line-height:1.55;font-size:13px}button{width:100%;min-height:58px;border:0;border-radius:16px;background:#eef7ff;color:#07111f;font-size:18px;font-weight:800;margin-top:16px;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}.st{margin-top:18px;min-height:48px;color:#a7b7ca;white-space:pre-wrap;line-height:1.5}.ok{color:#6ee7b7}.err{color:#fda4af}.result{display:none;margin-top:18px;border:1px solid #28533f;background:#0a1c18;border-radius:16px;padding:16px}.result.show{display:block}.pill{display:inline-block;border:1px solid #28445f;border-radius:999px;padding:5px 9px;margin:3px 4px 3px 0;font-size:11px;color:#bcd0e4}.small{font-size:12px;color:#6f8298;margin-top:18px;line-height:1.6}
+</style></head>
+<body><main class="card">
+<div class="ey">Sovereign Owner Security Root · Bounded Proof Session</div>
+<h1>อนุมัติ Proof Session สำหรับคอมเครื่องที่ 2</h1>
+<p>Face ID / Passkey ครั้งนี้ใช้อนุมัติ <strong>proof session แบบจำกัดขอบเขต</strong> หลัง Owner Binding สำเร็จแล้ว เพื่อพิสูจน์ bounded runtime จริงโดยไม่เปิดสิทธิ์ควบคุมทั่วไป</p>
+<div class="gate">
+<b>อุปกรณ์เป้าหมาย</b><br><span class="mono">computer_35070e6e7ec44bac6b69d27f35e38c3d</span><br><br>
+<b>Scope</b> COMPUTER_BOUNDED_PROOF_SESSION_V1<br>
+<b>Risk</b> <span class="risk">HIGH — เพราะอนุญาต recovery ของ Local Emergency Stop แบบจำกัด</span><br>
+<b>อายุ Session</b> 15 นาที<br>
+<b>Local Stop Recovery</b> สูงสุด 2 ครั้ง<br>
+<b>Server Breaker Lease</b> สูงสุด 45 วินาที/ขั้น และมี watchdog re-close อัตโนมัติ<br>
+<b>Capability</b> SYSTEM_INVENTORY_READ (SHADOW / LOW / READ-ONLY)
+</div>
+<div class="warn"><b>ไม่อนุญาต:</b> Production execution, เมาส์, คีย์บอร์ด, Screen Capture, Clipboard, User-file content, Secrets, App Control, Arbitrary Shell, LAN discovery หรือการ delegate สิทธิ์</div>
+<div style="margin-top:14px"><span class="pill">can_delegate=false</span><span class="pill">exact device</span><span class="pill">one-time nonce</span><span class="pill">anti-replay</span><span class="pill">breaker TTL ≤45s</span><span class="pill">fail closed</span></div>
+<button id="go">อนุมัติ Bounded Proof Session ด้วย Face ID / Passkey</button>
+<div id="st" class="st">พร้อมตรวจ Drift Guard และสร้าง exact proof-session challenge เมื่อคุณกดปุ่ม</div>
+<section id="result" class="result"><b>✅ Bounded Proof Session พร้อมใช้งาน</b><p>Session ถูกผูกกับคอมเครื่องนี้และมีอายุ 15 นาที ขั้นถัดไปคือรัน Windows Bounded Proof Launcher บนคอมเครื่องเดิมหนึ่งครั้ง</p></section>
+<div class="small">ไม่มีการขอ password · ไม่มี passkey private material · ไม่มี recovery secret · ไม่มี persistent Owner session<br>การอนุมัตินี้ไม่ใช่ Production execution authority และไม่อนุญาต control pilot</div>
+</main>
+<script type="module">
+import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-computer-bounded-proof-session-approval';
+const btn=document.getElementById('go'),st=document.getElementById('st'),result=document.getElementById('result');
+const set=(t,c='')=>{st.textContent=t;st.className='st '+c};
+async function post(body){const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok||d?.ok===false){const e=new Error(d?.error||`HTTP_${r.status}`);e.data=d;throw e}return d}
+btn.onclick=async()=>{try{btn.disabled=true;result.classList.remove('show');set('กำลังตรวจ Owner Binding, Security Root, Release Gate, Circuit Breaker และ Capability Contract…');const o=await post({action:'options'});if(o?.scope!=='COMPUTER_BOUNDED_PROOF_SESSION_V1'||o?.risk!=='HIGH'||Number(o?.sessionMinutes)!==15||Number(o?.localStopRecoveries)!==2)throw new Error('SERVER_SCOPE_MISMATCH');set('กรุณายืนยัน Face ID / Passkey สำหรับ exact bounded proof session…');const credential=await startAuthentication({optionsJSON:o.options});set('กำลังตรวจ Passkey, nonce anti-replay และ Owner Command Gateway…');const v=await post({action:'verify',challengeId:o.challengeId,credential});if(!v?.verified||v?.productionExecution!==false||v?.executionAuthority!==false||v?.sensorAuthority!==false)throw new Error('PROOF_SESSION_READBACK_UNSAFE');result.classList.add('show');set('✅ Proof Session Authorized — Production Execution และ Control Authority ยังคงปิด','ok');btn.textContent='Bounded Proof Session Authorized'}catch(e){btn.disabled=false;result.classList.remove('show');set('ไม่สำเร็จ: '+(e?.message||String(e))+'\nระบบหยุดแบบ Fail Closed และไม่ได้เปิดสิทธิ์ควบคุมคอม','err')}};
+</script></body></html>
