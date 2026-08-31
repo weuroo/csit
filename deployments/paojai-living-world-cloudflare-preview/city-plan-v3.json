@@ -1,0 +1,59 @@
+{
+  "version": "3.0-preview",
+  "mode": "SHADOW_ONLY",
+  "production_effect": "NONE",
+  "world": {
+    "width": 3200,
+    "height": 2200,
+    "open_space_target_pct": 35,
+    "routes_default_visible": false
+  },
+  "districts": [
+    {"key":"BUSINESS","label_th":"ย่านธุรกิจ","anchor":"PM_STUDIO_WORK_HUB","center":[1600,1050],"radius":330},
+    {"key":"TOWN_CENTER","label_th":"ใจกลางเมือง","anchor":"CENTRAL_SQUARE","center":[1600,610],"radius":360},
+    {"key":"CREATIVE","label_th":"ย่านสร้างสรรค์","anchor":"ART_STUDIO","center":[700,700],"radius":430},
+    {"key":"LEARNING","label_th":"ย่านการเรียนรู้","anchor":"SCHOOL","center":[2450,650],"radius":430},
+    {"key":"WELLNESS","label_th":"แนวธรรมชาติและพักใจ","anchor":"QUIET_PARK","center":[650,1450],"radius":470},
+    {"key":"NIGHT_RECREATION","label_th":"ย่านสันทนาการและกลางคืน","anchor":"GAME_ARCADE","center":[2500,1450],"radius":470},
+    {"key":"RESIDENTIAL_SOUTHWEST","label_th":"ชุมชนที่พักตะวันตกเฉียงใต้","center":[1100,1850],"radius":390},
+    {"key":"RESIDENTIAL_SOUTHEAST","label_th":"ชุมชนที่พักตะวันออกเฉียงใต้","center":[2100,1850],"radius":390}
+  ],
+  "proposed_places": [
+    {"key":"WELLNESS_HOUSE","label_th":"บ้านสุขภาวะ","district":"WELLNESS","capacity":10,"activity_required":true},
+    {"key":"BOTANICAL_GARDEN","label_th":"สวนพฤกษศาสตร์","district":"WELLNESS","capacity":16,"activity_required":true},
+    {"key":"CURIOSITY_LAB","label_th":"ห้องทดลองความสงสัย","district":"LEARNING","capacity":10,"activity_required":true},
+    {"key":"EXPLORATION_CENTER","label_th":"ศูนย์สำรวจ","district":"LEARNING","capacity":12,"activity_required":true},
+    {"key":"COMMUNITY_HALL","label_th":"ศาลาประชาคม","district":"TOWN_CENTER","capacity":16,"activity_required":true},
+    {"key":"PUZZLE_CLUB","label_th":"ชมรมปริศนา","district":"NIGHT_RECREATION","capacity":10,"activity_required":true},
+    {"key":"NIGHT_MARKET","label_th":"ตลาดค่ำ","district":"TOWN_CENTER","capacity":20,"activity_required":true,"active_window":["18:00","23:30"]},
+    {"key":"NIGHT_CINEMA","label_th":"โรงหนังกลางคืน","district":"NIGHT_RECREATION","capacity":18,"activity_required":true,"active_window":["19:30","23:30"]},
+    {"key":"NIGHT_MUSIC_LOUNGE","label_th":"เลานจ์ดนตรีกลางคืน","district":"CREATIVE","capacity":12,"activity_required":true,"active_window":["20:00","23:30"]},
+    {"key":"ROOFTOP_NIGHT_DECK","label_th":"ดาดฟ้ายามค่ำ","district":"CREATIVE","capacity":8,"activity_required":true,"active_window":["19:00","23:30"]},
+    {"key":"MOONLIGHT_PLAZA","label_th":"ลานแสงจันทร์","district":"NIGHT_RECREATION","capacity":16,"activity_required":true,"active_window":["19:00","23:45"]}
+  ],
+  "capacity_defaults": {
+    "AI_HOME": 3,
+    "NPC_SHADOW_HOME": 2,
+    "SMALL_SOCIAL": 8,
+    "MEDIUM_SOCIAL": 12,
+    "LARGE_PUBLIC": 18
+  },
+  "movement": {
+    "max_relocation_start_pct_5m": 20,
+    "work_overrides_leisure": true,
+    "destination_factors": ["obligation","preference","time_of_day","novelty","distance","occupancy","relationship_opportunity","cooldown","recovery_need"],
+    "experience_required_after_trip": true,
+    "experience_coverage_target_pct": 90
+  },
+  "residences": {
+    "ai_source": "pm_ai_agent_homes_v1",
+    "ai_verified_home_count": 13,
+    "npc_mode": "SHADOW_ALLOCATION_UNTIL_VERIFIED_BACKEND_HOME_IDENTITY"
+  },
+  "safety": {
+    "public_safe_only": true,
+    "forbidden_exposure": ["client_content","credentials","permission_details","internal_decision_logic","raw_chain_of_thought","security_command"],
+    "feature_freeze_safe": true,
+    "autonomy_expansion": false
+  }
+}

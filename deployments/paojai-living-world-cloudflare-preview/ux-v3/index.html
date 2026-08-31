@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#eef8f3">
+<meta name="robots" content="noindex,nofollow">
+<title>Paojai Living World · UX v3 Preview</title>
+<link rel="stylesheet" href="./ux-v3.css">
+</head>
+<body>
+<div class="app">
+  <header class="header glass">
+    <div class="brand">
+      <div class="brandmark">🏡</div>
+      <div>
+        <h1>Paojai Living World</h1>
+        <div class="subline"><span class="dot"></span> PERSONAL · READ-ONLY · PUBLIC-SAFE · UX v3 PREVIEW</div>
+      </div>
+    </div>
+    <nav class="nav" aria-label="Living World navigation">
+      <a href="../inner-life.html">🧠 Inner Life</a>
+      <a href="../conversation-history.html">💬 บทสนทนา</a>
+      <a href="../mission-world.html">🛰️ Mission World</a>
+    </nav>
+  </header>
+
+  <div id="error" class="error"></div>
+
+  <section class="summary-strip">
+    <div class="status-copy">
+      <b id="statusHeadline">กำลังเชื่อมต่อ Living World</b>
+      <p id="statusSub">หน้านี้อ่านข้อมูล public-safe เท่านั้น และไม่ทำ action ใด ๆ</p>
+    </div>
+    <div class="metrics" aria-label="Living World summary">
+      <div class="metric"><strong id="living">—</strong><span>AI ในโลกส่วนตัว</span></div>
+      <div class="metric"><strong id="away">—</strong><span>AI ที่บริษัท</span></div>
+      <div class="metric"><strong id="npcCount">—</strong><span>NPC ในเมือง</span></div>
+      <div class="metric"><strong id="placesCount">—</strong><span>สถานที่</span></div>
+      <div class="metric"><strong id="commuting">—</strong><span>กำลังเดินทาง</span></div>
+      <div class="metric"><strong id="clock">--:--</strong><span>กรุงเทพฯ</span></div>
+    </div>
+  </section>
+
+  <main class="workspace">
+    <section class="world-card" aria-label="Living World map">
+      <div id="mapbox" class="mapbox">
+        <div class="mapbar">
+          <div class="pill"><span class="dot"></span> Live · read-only</div>
+          <div class="filters" aria-label="Map filters">
+            <button class="filter on" data-filter="ai">AI</button>
+            <button class="filter on" data-filter="npc">NPC</button>
+            <button class="filter on" data-filter="places">สถานที่</button>
+          </div>
+        </div>
+        <div id="world" class="world">
+          <div class="sky"></div>
+          <div class="road r1"></div><div class="road r2"></div><div class="road r3"></div><div class="road r4"></div>
+          <div class="district" style="left:90px;top:300px;width:650px;height:420px"><span>🌿 West · Recovery / Creative</span></div>
+          <div class="district" style="left:820px;top:250px;width:760px;height:390px"><span>📚 North · Learning / Social</span></div>
+          <div class="district" style="left:1620px;top:320px;width:650px;height:430px"><span>🎮 East · Play / Civic</span></div>
+          <div class="district" style="left:300px;top:900px;width:1800px;height:430px"><span>🏘️ South · Residential / Community</span></div>
+          <div id="places"></div>
+          <div id="routes"></div>
+          <button id="office" class="office" aria-label="PM Marketing Studio">
+            <div class="logo">🏢 PM Marketing Studio</div>
+            <div class="sub">แสดงเฉพาะ work presence · รายละเอียดอยู่ Mission World</div>
+            <div class="door"></div>
+            <div id="officeCount" class="officebadge">0 คนทำงาน</div>
+          </button>
+          <div id="npcs"></div>
+          <div id="agents"></div>
+        </div>
+        <div id="zoomlabel" class="zoomchip">55%</div>
+        <div class="controls">
+          <button id="zin" class="btn" aria-label="Zoom in">＋</button>
+          <button id="zout" class="btn" aria-label="Zoom out">−</button>
+          <button id="reset" class="btn wide">ภาพรวม</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="rail" aria-label="Living World context panel">
+      <section class="panel glass">
+        <div class="rail-head">
+          <div><div class="kicker">RIGHT NOW</div><h2>สิ่งที่กำลังเกิดขึ้น</h2></div>
+          <div id="railtime" class="railtime">--:--:--</div>
+        </div>
+        <div class="highlight">
+          <b id="rightNowTitle">กำลังโหลดเหตุการณ์ล่าสุด</b>
+          <p id="rightNowText">กำลังเชื่อมข้อมูล public-safe</p>
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="now">ชีวิต</button>
+          <button class="tab" data-tab="people">ผู้คน</button>
+          <button class="tab" data-tab="conv">บทสนทนา</button>
+          <button class="tab" data-tab="places">สถานที่</button>
+        </div>
+        <div class="tabpane active" data-pane="now"><div id="nowFeed" class="feed"></div></div>
+        <div class="tabpane" data-pane="people"><div id="peopleFeed" class="feed"></div></div>
+        <div class="tabpane" data-pane="conv"><div id="convFeed" class="feed"></div></div>
+        <div class="tabpane" data-pane="places"><div id="placesFeed" class="feed"></div></div>
+      </section>
+      <section class="panel glass privacy">
+        <div class="kicker">PRIVACY BOUNDARY</div>
+        <details>
+          <summary>โลกนี้แสดงอะไร</summary>
+          <p>แสดงเฉพาะข้อมูล Living World ที่ผ่าน public-safe view: AI↔AI, AI↔NPC, activity summaries, work presence และสถานที่ส่วนตัวที่อนุญาต ไม่แสดง client/mission content, secrets, authority material, employee evaluation หรือ chain-of-thought ดิบ</p>
+        </details>
+      </section>
+    </aside>
+  </main>
+</div>
+
+<div id="sheetbg" class="sheetbg">
+  <section class="sheet">
+    <div class="handle"></div>
+    <button id="sheetClose" class="btn" style="float:right">ปิด</button>
+    <div id="sheetBody"></div>
+  </section>
+</div>
+
+<div id="convbg" class="convbg">
+  <section class="modal">
+    <div class="modalhead">
+      <div><div class="kicker">PUBLIC-SAFE HISTORY</div><h2>💬 บทสนทนาใน Living World</h2></div>
+      <button id="convClose" class="btn">ปิด</button>
+    </div>
+    <div id="convList"></div>
+  </section>
+</div>
+
+<!-- compatibility hook for v3 bootstrap; intentionally hidden -->
+<button id="convBtn" type="button" hidden aria-hidden="true"></button>
+<script src="./ux-v3.js"></script>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#edf3ee">
+<meta name="robots" content="noindex,nofollow">
+<title>Paojai Living World · Readable Living Simulation v6</title>
+<link rel="stylesheet" href="../ux-v4/ux-v4.css">
+<link rel="stylesheet" href="./ux-v6.css">
+</head>
+<body>
+<div class="cinematic-bg" aria-hidden="true"><i></i><i></i><i></i></div>
+<div class="game-shell">
+  <header class="hud-top">
+    <div class="brand-lockup">
+      <div class="brand-sigil"><span>◆</span></div>
+      <div class="brand-copy">
+        <div class="eyebrow">PAOJAI · LIVING INTELLIGENCE</div>
+        <h1>Living World</h1>
+        <div class="live-line"><span class="live-dot"></span><b>โลกส่วนตัว</b><span>อ่านอย่างเดียว</span><span>Public-safe</span><em>UX v6</em></div>
+      </div>
+    </div>
+    <nav class="hud-nav" aria-label="Living World navigation">
+      <a href="../inner-life.html"><span>◈</span><b>Inner Life</b><small>ชีวิตภายใน</small></a>
+      <button id="convBtn" type="button"><span>◌</span><b>บทสนทนา</b><small>คุยกันล่าสุด</small></button>
+      <a href="../mission-world.html"><span>⌁</span><b>Mission World</b><small>โลกของภารกิจ</small></a>
+    </nav>
+  </header>
+
+  <section class="world-summary" aria-label="Living World summary">
+    <div class="summary-copy">
+      <div class="eyebrow">ภาพรวมตอนนี้</div>
+      <b id="statusHeadline">กำลังเชื่อมต่อ Living World</b>
+      <p id="statusSub">ข้อมูลจริงเป็นจุดยึด · การเดินภายในพื้นที่เป็นภาพจำลองเพื่อให้โลกดูมีชีวิต</p>
+    </div>
+    <div class="metric-deck">
+      <div class="metric"><i>AI</i><strong id="living">—</strong><span>อยู่ในโลกส่วนตัว</span></div>
+      <div class="metric"><i>HQ</i><strong id="away">—</strong><span>อยู่ที่บริษัท</span></div>
+      <div class="metric"><i>NPC</i><strong id="npcCount">—</strong><span>ประชากรในโลก</span></div>
+      <div class="metric"><i>LOC</i><strong id="placesCount">—</strong><span>สถานที่</span></div>
+      <div class="metric"><i>MOVE</i><strong id="commuting">—</strong><span>กำลังเดินทางจริง</span></div>
+      <div class="metric time"><i>BKK</i><strong id="clock">--:--</strong><span>เวลาไทย</span></div>
+    </div>
+  </section>
+
+  <div id="error" class="error"></div>
+
+  <main class="stage-grid">
+    <section class="world-frame" aria-label="Living World interactive map">
+      <div class="map-caption">
+        <div><span class="live-dot"></span><b>โลกกำลังเคลื่อนไหว</b><small>ซูมเข้าเพื่อดูชื่อ · เลือกตัวละครเพื่อดูรายละเอียด</small></div>
+        <div class="map-filters" aria-label="Map filters">
+          <button class="filter on" data-filter="ai"><i></i>AI</button>
+          <button class="filter on" data-filter="npc"><i></i>NPC</button>
+          <button class="filter on" data-filter="places"><i></i>สถานที่</button>
+        </div>
+      </div>
+
+      <div id="mapbox" class="mapbox">
+        <div class="vignette" aria-hidden="true"></div>
+        <div class="motion-legend"><i></i><span>กำลังเคลื่อนไหว</span><b>VISUAL</b></div>
+        <div id="world" class="world">
+          <div class="sky"></div>
+          <div class="terrain-base"></div>
+          <div class="terrain-contours"></div>
+          <div class="terrain-grain"></div>
+          <div class="light-field l1"></div><div class="light-field l2"></div><div class="light-field l3"></div>
+          <div class="transit-ring ring-a"></div><div class="transit-ring ring-b"></div>
+          <div class="road r1"></div><div class="road r2"></div><div class="road r3"></div><div class="road r4"></div>
+          <div class="district west" style="left:90px;top:300px;width:650px;height:420px"><span><b>ตะวันตก</b> พัก · สร้างสรรค์</span></div>
+          <div class="district north" style="left:820px;top:250px;width:760px;height:390px"><span><b>เหนือ</b> เรียนรู้ · สังคม</span></div>
+          <div class="district east" style="left:1620px;top:320px;width:650px;height:430px"><span><b>ตะวันออก</b> เล่น · ชุมชน</span></div>
+          <div class="district south" style="left:300px;top:900px;width:1800px;height:430px"><span><b>ใต้</b> บ้าน · ชีวิตประจำวัน</span></div>
+          <div id="places"></div>
+          <div id="routes"></div>
+          <button id="office" class="office" aria-label="PM Marketing Studio">
+            <div class="office-glow"></div>
+            <div class="office-crown">PAOJAI HQ</div>
+            <div class="logo">PM Marketing Studio</div>
+            <div class="sub">ศูนย์กลางการทำงาน</div>
+            <div class="tower-windows"></div>
+            <div class="door"></div>
+            <div id="officeCount" class="officebadge">0 คนทำงาน</div>
+          </button>
+          <div id="npcs"></div>
+          <div id="agents"></div>
+        </div>
+        <div class="map-hud-left"><div class="coord"><span>WORLD</span><b>PAOJAI-01</b></div><div id="zoomlabel" class="zoomchip">55%</div></div>
+        <div class="controls"><button id="zin" class="control" aria-label="Zoom in">＋</button><button id="zout" class="control" aria-label="Zoom out">−</button><button id="reset" class="control wide">ภาพรวม</button></div>
+      </div>
+    </section>
+
+    <aside class="intel-rail" aria-label="Living World information panel">
+      <section class="intel-card primary">
+        <div class="rail-title"><div><div class="eyebrow">ตอนนี้</div><h2>กำลังเกิดอะไรขึ้น</h2></div><div id="railtime" class="railtime">--:--:--</div></div>
+        <div class="pulse-card"><div class="pulse-icon"><i></i><i></i><i></i></div><div><b id="rightNowTitle">กำลังโหลดเหตุการณ์ล่าสุด</b><p id="rightNowText">กำลังเชื่อมข้อมูล public-safe</p></div></div>
+        <div class="tabs" role="tablist"><button class="tab active" data-tab="now">ชีวิต</button><button class="tab" data-tab="people">ผู้คน</button><button class="tab" data-tab="conv">บทสนทนา</button><button class="tab" data-tab="places">สถานที่</button></div>
+        <div class="tabstage"><div class="tabpane active" data-pane="now"><div id="nowFeed" class="feed"></div></div><div class="tabpane" data-pane="people"><div id="peopleFeed" class="feed"></div></div><div class="tabpane" data-pane="conv"><div id="convFeed" class="feed"></div></div><div class="tabpane" data-pane="places"><div id="placesFeed" class="feed"></div></div></div>
+      </section>
+      <section class="intel-card privacy"><div class="privacy-icon">◈</div><div><div class="eyebrow">ขอบเขตข้อมูล</div><details><summary>โลกนี้แสดงอะไร</summary><p>แสดงเฉพาะข้อมูล public-safe, ชีวิตส่วนตัวของ AI, AI↔AI, AI↔NPC, work presence และสถานที่ที่อนุญาต การเดิน ambient เป็นภาพจำลองรอบตำแหน่งจริง ไม่ใช่หลักฐานการเดินทางจริง</p></details></div></section>
+      <section class="intel-card legend"><div class="eyebrow">อ่านแผนที่</div><div class="legend-grid"><span><i class="g ai"></i>AI</span><span><i class="g npc"></i>NPC</span><span><i class="g place"></i>สถานที่</span><span><i class="g route"></i>เดินทางจริง</span></div></section>
+    </aside>
+  </main>
+  <footer class="hud-footer"><span><i class="live-dot"></i> Paojai Living World · isolated v6 preview</span><span>READ ONLY · PUBLIC SAFE</span></footer>
+</div>
+<div id="sheetbg" class="sheetbg"><section class="sheet"><div class="handle"></div><button id="sheetClose" class="control sheet-close">×</button><div id="sheetBody"></div></section></div>
+<div id="convbg" class="convbg"><section class="modal"><div class="modalhead"><div><div class="eyebrow">ประวัติที่เปิดเผยได้</div><h2>บทสนทนาใน Living World</h2></div><button id="convClose" class="control">×</button></div><div id="convList"></div></section></div>
+<script src="../ux-v3/ux-v3.js"></script>
+<script src="./ux-v6-motion.js"></script>
+</body>
+</html>
