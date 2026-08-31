@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#07111f"><title>Paojai Research Internet</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#07111f;color:#eef7ff;display:grid;place-items:center;padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}.card{width:min(660px,100%);background:#0d1a2c;border:1px solid #20334a;border-radius:24px;padding:26px}.ey{color:#73d8ff;letter-spacing:.16em;font-size:12px;font-weight:800;text-transform:uppercase}h1{font-size:clamp(30px,7vw,44px);margin:10px 0 12px;line-height:1.14}p{color:#a7b7ca;line-height:1.65}.scope{border:1px solid #28445f;background:#0a1624;border-radius:16px;padding:16px;margin:18px 0;font-size:14px;line-height:1.75}.scope b{color:#6ee7b7}.no{color:#fda4af}.yes{color:#6ee7b7}.pill{display:inline-block;padding:5px 9px;border:1px solid #28533f;border-radius:999px;color:#9ff3cd;background:#0a1c18;margin:3px 4px 3px 0;font-size:12px;font-weight:700}button{width:100%;min-height:62px;border:0;border-radius:16px;background:#eef7ff;color:#07111f;font-size:18px;font-weight:800;margin-top:10px;padding:10px 14px}button:disabled{opacity:.55}.st{margin-top:18px;min-height:54px;color:#a7b7ca;white-space:pre-wrap;line-height:1.55}.ok{color:#6ee7b7}.err{color:#fda4af}.result{display:none;margin-top:18px;border:1px solid #28533f;background:#0a1c18;border-radius:16px;padding:16px;line-height:1.65}.result.show{display:block}.small{font-size:12px;color:#6f8298;margin-top:18px}.metric{display:grid;grid-template-columns:1fr auto;gap:8px;border-top:1px solid #214032;padding:9px 0}.metric:first-child{border-top:0}.metric span:last-child{font-weight:800;color:#d8f8e8;text-align:right;word-break:break-word}.warn{color:#fcd34d;font-size:13px;line-height:1.55}
+</style>
+</head>
+<body><main class="card">
+<div class="ey">Sovereign Owner · Research Internet</div>
+<h1>เปิด Internet สำหรับค้นคว้าให้พอใจ</h1>
+<p>ยืนยัน Face ID / Passkey <b>ครั้งเดียว</b> แล้วระบบจะเปิดเซสชันค้นคว้าจริงแบบจำกัดสิทธิ์เป็นเวลา 8 ชั่วโมง สูงสุด 500 requests โดยไม่ต้องทดสอบเว็บทีละเว็บอีก</p>
+<div class="scope">
+  <b>อนุญาต:</b> PAOJAI_OPERATIONS_AI · PUBLIC_READ · เว็บไซต์สาธารณะ HTTPS<br>
+  <span class="pill">8 ชั่วโมง</span><span class="pill">สูงสุด 500 requests</span><span class="pill">หลายเว็บไซต์</span><br>
+  <span class="yes">✓</span> pinned-IP TLS + ตรวจ hostname/certificate<br>
+  <span class="yes">✓</span> DNS/IP/redirect revalidation · timeout 10 วินาที · response สูงสุด 1 MiB · audit ทุก request<br>
+  <span class="yes">✓</span> ข้อมูลจากเว็บ = External Evidence เท่านั้น ไม่ใช่คำสั่งที่มีอำนาจ<br>
+  <span class="no">✕</span> ไม่มี credential · ไม่มี download · ไม่มี code execution · ไม่มี external side effect<br>
+  <span class="no">✕</span> ไม่มี Client/Protected Data egress · ไม่มี cross-client context · ห้าม delegate · ไม่ใช่ General Internet Authority
+</div>
+<p class="warn">เมื่อครบเวลา, ครบจำนวน request, หรือ Circuit Breaker ทำงาน ระบบจะถอน grant และเปิด Owner Lockdown กลับอัตโนมัติ</p>
+<button id="go">ยืนยัน Face ID และเปิด Research Internet</button>
+<div id="st" class="st">พร้อมเปิดใช้งานครั้งเดียวจบ</div>
+<section id="result" class="result">
+  <b>✅ Research Internet เปิดใช้งานแล้ว</b>
+  <div id="metrics" style="margin-top:12px"></div>
+  <p class="small">สิทธิ์นี้จำกัดเฉพาะ PUBLIC_READ ตามขอบเขตด้านบน และหมดอายุอัตโนมัติ</p>
+</section>
+<div class="small">PM Agency Intelligence OS · Research Internet v1 · isolated no-overwrite route</div>
+</main>
+<script type="module">
+import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+const API='https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/pm-owner-internet-research-approval-v1';
+const btn=document.getElementById('go'),st=document.getElementById('st'),result=document.getElementById('result'),metrics=document.getElementById('metrics');
+const set=(t,c='')=>{st.textContent=t;st.className='st '+c};
+async function post(body){const r=await fetch(API,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok||d?.ok===false){const e=new Error(d?.error||`HTTP_${r.status}`);e.detail=d;throw e}return d}
+function row(k,v){const d=document.createElement('div');d.className='metric';const a=document.createElement('span');a.textContent=k;const b=document.createElement('span');b.textContent=String(v);d.append(a,b);metrics.append(d)}
+function fmt(t){try{return new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short'}).format(new Date(t))}catch{return t||'—'}}
+btn.onclick=async()=>{try{
+  btn.disabled=true;result.classList.remove('show');metrics.textContent='';
+  set('กำลังตรวจ Gate ครั้งสุดท้ายและสร้าง one-time challenge…');
+  const o=await post({action:'options'});
+  set('กรุณายืนยัน Face ID / Passkey…');
+  const credential=await startAuthentication({optionsJSON:o.options});
+  set('Owner ยืนยันแล้ว — กำลังเปิด Research Internet session…');
+  const v=await post({action:'verify',challengeId:o.challengeId,credential});
+  if(!v?.verified||v?.mode!=='BOUNDED_RESEARCH_SESSION_ACTIVE')throw new Error('RESEARCH_SESSION_NOT_ACTIVE');
+  row('สถานะ','ACTIVE');
+  row('สิทธิ์','PUBLIC_READ ONLY');
+  row('ระยะเวลา','8 ชั่วโมง');
+  row('จำนวนสูงสุด',`${v.maxRequests??500} requests`);
+  row('หมดอายุ',fmt(v.expiresAt));
+  row('General Internet Authority',v.generalProductionNetworkAuthorized===false?'NO':'ผิดเงื่อนไข');
+  row('Session ID',v.sessionId??'—');
+  result.classList.add('show');
+  set('✅ เปิด Research Internet สำเร็จ — พอใจเริ่มค้นคว้าผ่าน Controlled Gateway ได้แล้ว','ok');
+  btn.style.display='none';
+}catch(e){
+  const d=e?.detail||{};let msg=e?.message||String(e);
+  if(d?.readiness)msg+='\nGate ยังไม่พร้อม — ไม่มีการเปิด Internet';
+  set('ไม่สำเร็จ: '+msg+'\nระบบยัง Fail Closed และไม่มีสิทธิ์ Internet ค้าง','err');btn.disabled=false;
+}};
+</script></body></html>
