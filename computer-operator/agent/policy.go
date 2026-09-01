@@ -9,41 +9,42 @@ import (
 
 const (
     CapabilityProduction = "COMPUTER_OPERATOR_PRODUCTION_V1"
-    MaxLeaseSeconds      = 30
-    MaxCommandsPerLease  = 12
-    MaxTypedChars        = 512
+    CapabilityReleaseProof = "COMPUTER_OPERATOR_REAL_APP_RELEASE_PROOF_V1"
+    MaxLeaseSeconds = 30
+    MaxCommandsPerLease = 12
+    MaxTypedChars = 512
 )
 
 type Command struct {
-    ID          string         `json:"command_id"`
-    Type        string         `json:"type"`
-    X           int32          `json:"x,omitempty"`
-    Y           int32          `json:"y,omitempty"`
-    Button      string         `json:"button,omitempty"`
-    Text        string         `json:"text,omitempty"`
-    Key         string         `json:"key,omitempty"`
-    WindowTitle string         `json:"window_title,omitempty"`
-    MaskRects   []Rect         `json:"mask_rects,omitempty"`
-    Meta        map[string]any `json:"meta,omitempty"`
+    ID string `json:"command_id"`
+    Type string `json:"type"`
+    X int32 `json:"x,omitempty"`
+    Y int32 `json:"y,omitempty"`
+    Button string `json:"button,omitempty"`
+    Text string `json:"text,omitempty"`
+    Key string `json:"key,omitempty"`
+    WindowTitle string `json:"window_title,omitempty"`
+    MaskRects []Rect `json:"mask_rects,omitempty"`
+    Meta map[string]any `json:"meta,omitempty"`
 }
 
 type Rect struct { X, Y, W, H int }
 
 type Lease struct {
-    LeaseID             string    `json:"lease_id"`
-    LeaseNonce          string    `json:"lease_nonce"`
-    ExpiresAt           time.Time `json:"expires_at"`
-    Capability          string    `json:"capability"`
-    ProductionExecution bool      `json:"production_execution"`
-    PersistentAuthority bool      `json:"persistent_execution_authority"`
-    AllowRealDesktop    bool      `json:"allow_real_desktop"`
-    AllowRealApp        bool      `json:"allow_real_app"`
-    AllowScreen         bool      `json:"allow_screen"`
-    AllowMouse          bool      `json:"allow_mouse"`
-    AllowKeyboard       bool      `json:"allow_keyboard"`
-    HighImpactAllowed   bool      `json:"high_impact_allowed"`
-    AllowedWindowTitles []string  `json:"allowed_window_titles"`
-    Commands            []Command `json:"commands"`
+    LeaseID string `json:"lease_id"`
+    LeaseNonce string `json:"lease_nonce"`
+    ExpiresAt time.Time `json:"expires_at"`
+    Capability string `json:"capability"`
+    ProductionExecution bool `json:"production_execution"`
+    PersistentAuthority bool `json:"persistent_execution_authority"`
+    AllowRealDesktop bool `json:"allow_real_desktop"`
+    AllowRealApp bool `json:"allow_real_app"`
+    AllowScreen bool `json:"allow_screen"`
+    AllowMouse bool `json:"allow_mouse"`
+    AllowKeyboard bool `json:"allow_keyboard"`
+    HighImpactAllowed bool `json:"high_impact_allowed"`
+    AllowedWindowTitles []string `json:"allowed_window_titles"`
+    Commands []Command `json:"commands"`
 }
 
 var blockedWindowTerms = []string{
@@ -98,6 +99,4 @@ func windowAllowed(title string, allow []string) bool {
     return false
 }
 
-func localStopPresent(stopPath string) bool {
-    return fileExists(stopPath)
-}
+func localStopPresent(stopPath string) bool { return fileExists(stopPath) }
