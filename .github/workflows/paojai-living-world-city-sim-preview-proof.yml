@@ -21,9 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      PREVIEW_ORIGIN: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app
-      PREVIEW_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/city-sim-mvp-v1.html
-      SHARE_BOOTSTRAP_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/?_vercel_share=vAOKBo6Jos7SnNfQu7C4HPuc6VwEZWqe
+      PREVIEW_ORIGIN: https://paojai-living-world-rnnxhxq6o-pm-marketing-studio.vercel.app
+      PREVIEW_URL: https://paojai-living-world-rnnxhxq6o-pm-marketing-studio.vercel.app/city-sim-mvp-v1.html
+      SHARE_BOOTSTRAP_URL: https://paojai-living-world-rnnxhxq6o-pm-marketing-studio.vercel.app/?_vercel_share=Jj25DcpuMHqoL6pzP4AY81TfnfmnLNkj
       API_URL: https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-city-sim-public-v1?pulse=20
     steps:
       - name: Checkout
@@ -87,7 +87,8 @@ jobs:
           ! grep -q 'id="error" class="error show"' mobile-dom.html
           ENTITY_COUNT="$(grep -o 'class="entity [^"]*"' mobile-dom.html | wc -l | tr -d ' ')"
           test "$ENTITY_COUNT" -eq 71
-          grep -q 'id="world" class="world' mobile-dom.html
+          grep -q 'id="world" class="world lod-district' mobile-dom.html
+          grep -Eq 'id="zoomPct">(4[6-9]|5[0-8])%</b>' mobile-dom.html
           grep -q 'class="bottomnav"' mobile-dom.html
           grep -q 'id="followToggle"' mobile-dom.html
           grep -q 'id="search"' mobile-dom.html
