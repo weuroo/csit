@@ -21,7 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      PREVIEW_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/city-sim-mvp-v1.html?_vercel_share=vAOKBo6Jos7SnNfQu7C4HPuc6VwEZWqe
+      PREVIEW_ORIGIN: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app
+      PREVIEW_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/city-sim-mvp-v1.html
+      SHARE_BOOTSTRAP_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/?_vercel_share=vAOKBo6Jos7SnNfQu7C4HPuc6VwEZWqe
       API_URL: https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-city-sim-public-v1?pulse=20
     steps:
       - name: Checkout
@@ -50,21 +52,35 @@ jobs:
           echo "bin=$CHROME" >> "$GITHUB_OUTPUT"
           "$CHROME" --version
 
-      - name: Verify preview access
+      - name: Verify protected preview access
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --silent --show-error --retry 3 "$PREVIEW_URL" -o preview-source.html
+          curl --fail --location --silent --show-error --retry 3 -c vercel.cookies -b vercel.cookies "$SHARE_BOOTSTRAP_URL" -o share-bootstrap.html
+          curl --fail --location --silent --show-error --retry 3 -c vercel.cookies -b vercel.cookies "$PREVIEW_URL" -o preview-source.html
           grep -q '<title>Paojai Living World — City Sim MVP</title>' preview-source.html
           ! grep -q '<title>Login – Vercel</title>' preview-source.html
+
+      - name: Bootstrap Chrome preview session
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME='${{ steps.chrome.outputs.bin }}'
+          PROFILE="$RUNNER_TEMP/paojai-city-sim-chrome"
+          mkdir -p "$PROFILE"
+          timeout 45s "$CHROME" --headless --no-sandbox --disable-gpu \
+            --user-data-dir="$PROFILE" --virtual-time-budget=5000 \
+            --dump-dom "$SHARE_BOOTSTRAP_URL" > chrome-bootstrap.html
+          test -s chrome-bootstrap.html
 
       - name: Render mobile viewport with real API
         shell: bash
         run: |
           set -euo pipefail
           CHROME='${{ steps.chrome.outputs.bin }}'
+          PROFILE="$RUNNER_TEMP/paojai-city-sim-chrome"
           timeout 45s "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
-            --window-size=390,844 --virtual-time-budget=10000 \
+            --user-data-dir="$PROFILE" --window-size=390,844 --virtual-time-budget=10000 \
             --dump-dom "$PREVIEW_URL" > mobile-dom.html
           grep -q '<b id="aiCount">17</b>' mobile-dom.html
           grep -q '<b id="npcCount">54</b>' mobile-dom.html
@@ -76,7 +92,7 @@ jobs:
           grep -q 'id="followToggle"' mobile-dom.html
           grep -q 'id="search"' mobile-dom.html
           timeout 45s "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
-            --window-size=390,844 --virtual-time-budget=10000 \
+            --user-data-dir="$PROFILE" --window-size=390,844 --virtual-time-budget=10000 \
             --screenshot=mobile-city-sim.png "$PREVIEW_URL"
           test -s mobile-city-sim.png
 
@@ -85,8 +101,9 @@ jobs:
         run: |
           set -euo pipefail
           CHROME='${{ steps.chrome.outputs.bin }}'
+          PROFILE="$RUNNER_TEMP/paojai-city-sim-chrome"
           timeout 45s "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
-            --window-size=1440,900 --virtual-time-budget=10000 \
+            --user-data-dir="$PROFILE" --window-size=1440,900 --virtual-time-budget=10000 \
             --dump-dom "$PREVIEW_URL" > desktop-dom.html
           grep -q '<b id="aiCount">17</b>' desktop-dom.html
           grep -q '<b id="npcCount">54</b>' desktop-dom.html
@@ -103,5 +120,7 @@ jobs:
             desktop-dom.html
             city-sim-api.json
             preview-source.html
+            share-bootstrap.html
+            chrome-bootstrap.html
           if-no-files-found: warn
           retention-days: 7
