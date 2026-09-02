@@ -1,0 +1,98 @@
+name: Paojai Living World City Sim Preview Proof
+
+on:
+  push:
+    branches: [living-world-city-sim-mvp-v1]
+    paths:
+      - 'deployments/paojai-living-world/city-sim-mvp-v1.html'
+      - '.github/workflows/paojai-living-world-city-sim-preview-proof.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'deployments/paojai-living-world/city-sim-mvp-v1.html'
+      - '.github/workflows/paojai-living-world-city-sim-preview-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mobile-browser-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PREVIEW_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/city-sim-mvp-v1.html
+      API_URL: https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-city-sim-public-v1?pulse=20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify public-safe API contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 "$API_URL" -o city-sim-api.json
+          jq -e '.ok == true' city-sim-api.json >/dev/null
+          jq -e '.public_safe == true and .read_only == true' city-sim-api.json >/dev/null
+          jq -e '.safety.production_action_allowed == false and .safety.client_action_allowed == false and .safety.external_network_allowed == false and .safety.action_endpoint_exposed == false' city-sim-api.json >/dev/null
+          jq -e '(.entities | length) == 71' city-sim-api.json >/dev/null
+          jq -e '([.entities[] | select(.entity_type == "AI")] | length) == 17' city-sim-api.json >/dev/null
+          jq -e '([.entities[] | select(.entity_type == "NPC")] | length) == 54' city-sim-api.json >/dev/null
+          jq -e '([.pulse[] | select(.production_fact == true)] | length) == 0' city-sim-api.json >/dev/null
+
+      - name: Resolve Chrome
+        id: chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$CHROME"
+          echo "bin=$CHROME" >> "$GITHUB_OUTPUT"
+          "$CHROME" --version
+
+      - name: Render mobile viewport with real API
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME='${{ steps.chrome.outputs.bin }}'
+          timeout 45s "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --window-size=390,844 --virtual-time-budget=10000 \
+            --dump-dom "$PREVIEW_URL" > mobile-dom.html
+          grep -q '<b id="aiCount">17</b>' mobile-dom.html
+          grep -q '<b id="npcCount">54</b>' mobile-dom.html
+          ! grep -q 'id="error" class="error show"' mobile-dom.html
+          ENTITY_COUNT="$(grep -o 'class="entity [^"]*"' mobile-dom.html | wc -l | tr -d ' ')"
+          test "$ENTITY_COUNT" -eq 71
+          grep -q 'id="world" class="world' mobile-dom.html
+          grep -q 'class="bottomnav"' mobile-dom.html
+          grep -q 'id="followToggle"' mobile-dom.html
+          grep -q 'id="search"' mobile-dom.html
+          timeout 45s "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --window-size=390,844 --virtual-time-budget=10000 \
+            --screenshot=mobile-city-sim.png "$PREVIEW_URL"
+          test -s mobile-city-sim.png
+
+      - name: Render desktop viewport
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME='${{ steps.chrome.outputs.bin }}'
+          timeout 45s "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --window-size=1440,900 --virtual-time-budget=10000 \
+            --dump-dom "$PREVIEW_URL" > desktop-dom.html
+          grep -q '<b id="aiCount">17</b>' desktop-dom.html
+          grep -q '<b id="npcCount">54</b>' desktop-dom.html
+          ! grep -q 'id="error" class="error show"' desktop-dom.html
+
+      - name: Upload visual proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paojai-city-sim-preview-proof
+          path: |
+            mobile-city-sim.png
+            mobile-dom.html
+            desktop-dom.html
+            city-sim-api.json
+          if-no-files-found: warn
+          retention-days: 7
