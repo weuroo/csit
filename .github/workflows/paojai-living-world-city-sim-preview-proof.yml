@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      PREVIEW_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/city-sim-mvp-v1.html
+      PREVIEW_URL: https://paojai-living-world-pvwzlnrx8-pm-marketing-studio.vercel.app/city-sim-mvp-v1.html?_vercel_share=vAOKBo6Jos7SnNfQu7C4HPuc6VwEZWqe
       API_URL: https://bvnmwfhqgdevupvcqqyl.supabase.co/functions/v1/paojai-city-sim-public-v1?pulse=20
     steps:
       - name: Checkout
@@ -49,6 +49,14 @@ jobs:
           test -n "$CHROME"
           echo "bin=$CHROME" >> "$GITHUB_OUTPUT"
           "$CHROME" --version
+
+      - name: Verify preview access
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 "$PREVIEW_URL" -o preview-source.html
+          grep -q '<title>Paojai Living World — City Sim MVP</title>' preview-source.html
+          ! grep -q '<title>Login – Vercel</title>' preview-source.html
 
       - name: Render mobile viewport with real API
         shell: bash
@@ -94,5 +102,6 @@ jobs:
             mobile-dom.html
             desktop-dom.html
             city-sim-api.json
+            preview-source.html
           if-no-files-found: warn
           retention-days: 7
