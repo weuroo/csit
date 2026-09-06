@@ -1,0 +1,33 @@
+// PRE-STAGED ONLY. DO NOT RUN AS A PRODUCTION MUTATION DURING FEATURE FREEZE.
+// Mission #18 promotion blocker: reservation RPC outcome ambiguity must fail closed.
+// Threat model: the DB may commit the one-request reservation while the executor loses
+// the RPC response (timeout/transport failure). In that state, the executor MUST NOT
+// assume the slot was not consumed and MUST authority-reduce via emergency relock before return.
+
+import fs from 'node:fs';
+
+const p='deployments/mission18-internet-fast-path/proof_executor_candidate.ts.disabled';
+const src=fs.readFileSync(p,'utf8');
+const failures=[];
+
+const requirePattern=(re,msg)=>{if(!re.test(src))failures.push(msg)};
+
+// The executor must distinguish an explicit non-consuming rejection from an ambiguous
+// RPC error/missing response. Any ambiguous outcome must trigger independent cleanup.
+requirePattern(/pm_internet_transport_proof_reserve_request_v1/,'reservation RPC missing');
+requirePattern(/RESERVATION_OUTCOME_AMBIGUOUS|RESERVATION_RPC_OUTCOME_UNKNOWN/,'missing explicit ambiguous-reservation path');
+requirePattern(/emergencyRelock\s*\(\s*commandId\s*,[^)]*(RESERVATION_OUTCOME_AMBIGUOUS|RESERVATION_RPC_OUTCOME_UNKNOWN)/s,'ambiguous reservation does not invoke emergency relock');
+requirePattern(/cleanup_verified|cleanupVerified/,'ambiguous cleanup verification not represented');
+requirePattern(/networkRequestPerformed\s*:\s*false/,'ambiguous reservation path must prove no DNS/transport request was started');
+requirePattern(/retryRequiresFreshReviewAndOwnerApproval\s*:\s*true/,'ambiguous reservation must require fresh review/Owner approval');
+
+// Fail closed if the current simple reservation failure branch can return directly on
+// RPC error or missing data without an authority-reducing cleanup call.
+const unsafeDirectReturn=/const\s*\{\s*data\s*:\s*reservation\s*,\s*error\s*:\s*re\s*\}\s*=\s*await\s+sb\.rpc\([^;]+;\s*if\s*\(\s*re\s*\|\|\s*!reservation\?\.ok[\s\S]{0,900}?return\s+reply\(/m;
+if(unsafeDirectReturn.test(src))failures.push('RPC error/missing reservation can still return before emergency relock');
+
+if(failures.length){
+  console.error(JSON.stringify({passed:false,gate:'RESERVATION_AMBIGUITY_FAIL_CLOSED',failures},null,2));
+  process.exit(1);
+}
+console.log(JSON.stringify({passed:true,gate:'RESERVATION_AMBIGUITY_FAIL_CLOSED'},null,2));

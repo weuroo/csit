@@ -1,0 +1,121 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Mission #18 reservation replay guard.
+-- Purpose: a previously consumed request_token must NEVER authorize another DNS/network attempt.
+
+create or replace function public.pm_internet_transport_proof_reserve_request_v1(p_request_token uuid, p_command_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  c public.pm_signed_owner_commands_v1%rowtype;
+  lane public.pm_internet_transport_proof_lane_v1%rowtype;
+  g public.pm_agent_capability_grants_v1%rowtype;
+  ctl public.pm_owner_internet_gateway_control_shadow_v1%rowtype;
+  existing public.pm_internet_transport_proof_request_tokens_v1%rowtype;
+  exp timestamptz;
+begin
+  c := public.pm_internet_assert_verified_transport_command_v1(p_command_id);
+  if p_request_token is null then raise exception 'REQUEST_TOKEN_REQUIRED'; end if;
+
+  -- CRITICAL FAIL-CLOSED RULE: a consumed token is terminal for transport execution.
+  -- Even an exact replay of the same command/token must NOT return ok=true because the
+  -- executor could otherwise perform a second DNS/network attempt behind one consumed slot.
+  select * into existing
+  from public.pm_internet_transport_proof_request_tokens_v1
+  where request_token=p_request_token;
+  if found then
+    if existing.source_command_id<>c.command_id then
+      raise exception 'REQUEST_TOKEN_COMMAND_REPLAY_MISMATCH';
+    end if;
+    return jsonb_build_object(
+      'ok',false,
+      'request_token',p_request_token,
+      'duplicate',true,
+      'slot_consumed',true,
+      'network_execution_allowed',false,
+      'reason','REQUEST_TOKEN_ALREADY_CONSUMED'
+    );
+  end if;
+
+  select * into ctl
+  from public.pm_owner_internet_gateway_control_shadow_v1
+  where control_key='CONTROLLED_INTERNET_GATEWAY'
+  for update;
+  if not found or ctl.owner_lockdown_active or ctl.production_network_enabled or ctl.mode<>'TRANSPORT_PROOF_SINGLE_REQUEST' then
+    raise exception 'ACTIVE_BOUNDED_PROOF_WINDOW_REQUIRED';
+  end if;
+  begin exp := nullif(ctl.evidence->>'unlock_expires_at','')::timestamptz; exception when others then exp := null; end;
+  if exp is null or exp<=now() or ctl.evidence->>'source_command_id'<>c.command_id::text then
+    perform public.pm_internet_transport_proof_relock_expired_v1();
+    raise exception 'PROOF_WINDOW_EXPIRED_OR_COMMAND_MISMATCH';
+  end if;
+
+  select * into g from public.pm_agent_capability_grants_v1
+  where source_command_id=c.command_id and grantee_agent_key='PAOJAI_OPERATIONS_AI'
+    and status='ACTIVE' and valid_from<=now() and expires_at>now()
+    and allowed_actions=array['PUBLIC_READ']::text[]
+    and risk_ceiling='LOW' and can_delegate=false
+    and allowed_resources->>'fixed_target_url'='https://example.com/'
+    and coalesce((allowed_resources->>'max_requests')::int,0)=1
+    and coalesce((allowed_resources->>'credentials')::boolean,true)=false
+    and coalesce((allowed_resources->>'downloads')::boolean,true)=false
+    and coalesce((allowed_resources->>'code_execution')::boolean,true)=false
+    and coalesce((allowed_resources->>'external_side_effects')::boolean,true)=false
+    and coalesce((allowed_resources->>'protected_data_egress')::boolean,true)=false
+    and coalesce((allowed_resources->>'cross_client_context')::boolean,true)=false
+  order by created_at desc limit 1;
+  if not found then raise exception 'EXACT_BOUNDED_LIVE_GRANT_REQUIRED'; end if;
+
+  update public.pm_internet_transport_proof_lane_v1
+  set network_request_count=network_request_count+1,
+      updated_by='pm_internet_transport_proof_reserve_request_v1',updated_at=now()
+  where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+    and enabled=true and proof_completed=false
+    and fixed_target_url='https://example.com/' and max_requests=1
+    and network_request_count=0
+  returning * into lane;
+  if not found then raise exception 'PROOF_REQUEST_SLOT_UNAVAILABLE'; end if;
+
+  begin
+    insert into public.pm_internet_transport_proof_request_tokens_v1(request_token,lane_key,source_command_id,evidence)
+    values (p_request_token,lane.lane_key,c.command_id,jsonb_build_object(
+      'slot_consumed',true,
+      'reserved_before_dns_or_network',true,
+      'network_execution_allowed_once',true,
+      'policy','FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE'
+    ));
+  exception when unique_violation then
+    -- Defensive path for concurrent duplicate token insertion. Slot count is already 1;
+    -- never authorize transport on the loser.
+    return jsonb_build_object(
+      'ok',false,
+      'request_token',p_request_token,
+      'duplicate',true,
+      'slot_consumed',true,
+      'network_execution_allowed',false,
+      'reason','CONCURRENT_REQUEST_TOKEN_REPLAY_BLOCKED'
+    );
+  end;
+
+  return jsonb_build_object(
+    'ok',true,
+    'request_token',p_request_token,
+    'duplicate',false,
+    'slot_consumed',true,
+    'network_execution_allowed',true,
+    'network_request_count',lane.network_request_count
+  );
+end;
+$$;
+
+revoke all on function public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid) from public, anon, authenticated;
+grant execute on function public.pm_internet_transport_proof_reserve_request_v1(uuid,uuid) to service_role;
+
+-- Mandatory post-apply runtime assertions:
+-- 1) first reservation: ok=true, duplicate=false, network_execution_allowed=true, lane count=1.
+-- 2) same token replay: ok=false, duplicate=true, network_execution_allowed=false, lane count remains 1.
+-- 3) different token after slot consumed: fail PROOF_REQUEST_SLOT_UNAVAILABLE, lane count remains 1.
+-- 4) same token with different VERIFIED command: fail REQUEST_TOKEN_COMMAND_REPLAY_MISMATCH.
+-- 5) no DNS/network is executed by any replay/concurrency test.

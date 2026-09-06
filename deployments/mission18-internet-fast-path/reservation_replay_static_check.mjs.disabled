@@ -1,0 +1,26 @@
+// PRE-STAGED ONLY. DO NOT RUN AS A DEPLOY HOOK DURING FEATURE FREEZE.
+// Static guard for Mission #18 one-slot transport replay semantics.
+import fs from 'node:fs';
+
+const executorPath=process.argv[2];
+const reservationPath=process.argv[3];
+if(!executorPath||!reservationPath) throw new Error('USAGE: node reservation_replay_static_check executor reservation_patch');
+const executor=fs.readFileSync(executorPath,'utf8');
+const reservation=fs.readFileSync(reservationPath,'utf8');
+const failures=[];
+const req=(src,text,label)=>{if(!src.includes(text)) failures.push(label)};
+const forbid=(src,text,label)=>{if(src.includes(text)) failures.push(label)};
+
+req(executor,'reservation?.duplicate===true','EXECUTOR_MUST_ABORT_DUPLICATE_RESERVATION');
+req(executor,"reservation?.network_execution_allowed!==true",'EXECUTOR_MUST_REQUIRE_EXPLICIT_NETWORK_EXECUTION_ALLOW');
+req(executor,'networkRequestPerformed:false','EXECUTOR_REPLAY_PATH_MUST_REPORT_NO_NETWORK');
+req(reservation,"'network_execution_allowed',false",'RESERVATION_REPLAY_MUST_DENY_NETWORK');
+req(reservation,"'REQUEST_TOKEN_ALREADY_CONSUMED'",'RESERVATION_REPLAY_REASON_REQUIRED');
+req(reservation,"'REQUEST_TOKEN_COMMAND_REPLAY_MISMATCH'",'CROSS_COMMAND_TOKEN_REPLAY_MUST_FAIL');
+req(reservation,'network_request_count=0','ATOMIC_SLOT_MUST_REQUIRE_PRISTINE_ZERO_COUNT');
+req(reservation,"allowed_actions=array['PUBLIC_READ']::text[]",'EXACT_SINGLE_ACTION_GRANT_REQUIRED');
+req(reservation,"coalesce((allowed_resources->>'max_requests')::int,0)=1",'EXACT_ONE_REQUEST_GRANT_REQUIRED');
+forbid(reservation,"return jsonb_build_object('ok',true,'request_token',p_request_token,'duplicate',true",'DUPLICATE_RESERVATION_MUST_NEVER_RETURN_OK_TRUE');
+
+console.log(JSON.stringify({passed:failures.length===0,failures},null,2));
+if(failures.length) process.exit(1);

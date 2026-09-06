@@ -1,0 +1,112 @@
+// PRE-STAGED ONLY. DO NOT DEPLOY DURING ACTIVE FEATURE FREEZE.
+// Mission #18 Owner approval Edge candidate v5.
+// Purpose: preserve the existing v4 WebAuthn verification flow but route authority through
+// pm_owner_command_gateway_v2(command_id, source_component) only. This candidate MUST remain
+// disabled/un-deployed until Stabilization Exit and live schema/security review.
+//
+// Invariants:
+// - exact intent: TRANSPORT_PROOF_SINGLE_REQUEST -> https://example.com/ -> max 1 request
+// - bounded owner lockdown release <=120s
+// - requested PAOJAI PUBLIC_READ grant <=10 minutes, can_delegate=false
+// - general production network authorization=false
+// - this endpoint records Owner approval only; it NEVER creates a grant, unlocks gateway,
+//   enables proof lane, performs DNS/network, or changes general production network
+// - no caller-supplied signature_verified is passed to any authority function
+// - command becomes VERIFIED only after crypto-bound gateway v2 returns allowed=true + nonce_consumed=true
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { generateAuthenticationOptions, verifyAuthenticationResponse } from "npm:@simplewebauthn/server@13";
+
+const sb=createClient(Deno.env.get('SUPABASE_URL')!,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+const enc=new TextEncoder();
+const OWNER_ORIGIN='https://paojai-owner-enrollment.vercel.app';
+const RP_ID='paojai-owner-enrollment.vercel.app';
+const MAX_ACTIVE_INTERNET_CHALLENGES_PER_DEVICE=2;
+const CHALLENGE_COOLDOWN_MS=15_000;
+const headers={'content-type':'application/json','cache-control':'no-store','access-control-allow-origin':OWNER_ORIGIN,'access-control-allow-methods':'POST,OPTIONS','access-control-allow-headers':'content-type','x-content-type-options':'nosniff','referrer-policy':'no-referrer'};
+const reply=(s:number,d:any)=>new Response(JSON.stringify(d),{status:s,headers});
+const sha256=async(s:string)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(s)))].map(x=>x.toString(16).padStart(2,'0')).join('');
+const randomToken=(bytes=32)=>{const a=crypto.getRandomValues(new Uint8Array(bytes));let s='';for(const x of a)s+=String.fromCharCode(x);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')};
+const fromB64u=(s:string)=>{const p=s.replace(/-/g,'+').replace(/_/g,'/');const pad=p+'='.repeat((4-p.length%4)%4);const raw=atob(pad);const out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out};
+const pilotPayload=(owner:string,device:string)=>({
+  owner_user_id:owner,device_id:device,command_type:'GRANT_CAPABILITY',action_scope:'PUBLIC_READ',
+  capability_key:'CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1',grantee_agent_key:'PAOJAI_OPERATIONS_AI',
+  allowed_actions:['PUBLIC_READ'],allowed_resources:{scheme:'https',fixed_target_url:'https://example.com/',public_internet_only:true,credentials:false,downloads:false,code_execution:false,external_side_effects:false,protected_data_egress:false,cross_client_context:false},
+  risk_level:'LOW',can_delegate:false,requested_grant_minutes:10,activation_scope:'TRANSPORT_PROOF_SINGLE_REQUEST',
+  transport_proof_target_url:'https://example.com/',transport_proof_max_requests:1,
+  authorize_owner_lockdown_release_for_transport_proof_only:true,owner_lockdown_release_max_seconds:120,
+  general_production_network_authorized:false,mode:'PRODUCTION_PILOT_APPROVAL_AND_SINGLE_PROOF_INTENT_ONLY'
+});
+
+Deno.serve(async(req:Request)=>{
+  const origin=req.headers.get('origin')||'';
+  if(origin!==OWNER_ORIGIN)return reply(403,{ok:false,error:'ORIGIN_NOT_ALLOWED'});
+  if(req.method==='OPTIONS')return new Response(null,{status:204,headers});
+  if(req.method!=='POST')return reply(405,{ok:false,error:'METHOD_NOT_ALLOWED'});
+  let b:any={};try{b=await req.json()}catch{return reply(400,{ok:false,error:'INVALID_JSON'})}
+  const action=String(b.action||'');
+  try{
+    const {data:d}=await sb.from('pm_owner_trusted_devices_v1').select('device_id,owner_user_id,credential_id,trust_state,revoked_at').eq('trust_state','TRUSTED').is('revoked_at',null).order('last_verified_at',{ascending:false}).limit(1).maybeSingle();
+    if(!d)return reply(403,{ok:false,error:'NO_TRUSTED_OWNER_DEVICE'});
+    const {data:a}=await sb.from('pm_owner_auth_allowlist_v1').select('user_id').eq('user_id',d.owner_user_id).eq('active',true).eq('role','OWNER').maybeSingle();
+    if(!a)return reply(403,{ok:false,error:'OWNER_NOT_ALLOWLISTED'});
+    const {data:r}=await sb.from('pm_owner_recovery_codes_v1').select('recovery_id').eq('owner_user_id',d.owner_user_id).eq('created_by_device_id',d.device_id).eq('status','ACTIVE').is('used_at',null).is('revoked_at',null).not('last_tested_at','is',null).filter('evidence->>recovery_test_passed','eq','true').limit(1).maybeSingle();
+    if(!r)return reply(403,{ok:false,error:'RECOVERY_GATE_NOT_READY'});
+    const {data:c}=await sb.from('pm_owner_passkey_credentials_v1').select('credential_id,public_key_b64u,counter,transports,status,user_verified').eq('owner_user_id',d.owner_user_id).eq('credential_id',d.credential_id).is('revoked_at',null).maybeSingle();
+    if(!c||!c.user_verified||!['TRUSTED','TRUSTED_SHADOW'].includes(String(c.status)))return reply(403,{ok:false,error:'TRUSTED_CREDENTIAL_REQUIRED'});
+    const payload=pilotPayload(d.owner_user_id,d.device_id);const payloadJson=JSON.stringify(payload);const payloadHash=await sha256(payloadJson);
+
+    if(action==='options'){
+      const nowIso=new Date().toISOString();
+      const cooldownIso=new Date(Date.now()-CHALLENGE_COOLDOWN_MS).toISOString();
+      const activeQ=sb.from('pm_owner_passkey_stepup_challenges_v1').select('challenge_id',{count:'exact',head:true}).eq('owner_user_id',d.owner_user_id).eq('device_id',d.device_id).is('used_at',null).gt('expires_at',nowIso).filter('evidence->>purpose','eq','INTERNET_PILOT_OWNER_APPROVAL');
+      const recentQ=sb.from('pm_owner_passkey_stepup_challenges_v1').select('challenge_id',{count:'exact',head:true}).eq('owner_user_id',d.owner_user_id).eq('device_id',d.device_id).gte('created_at',cooldownIso).filter('evidence->>purpose','eq','INTERNET_PILOT_OWNER_APPROVAL');
+      const [{count:activeCount,error:activeErr},{count:recentCount,error:recentErr}]=await Promise.all([activeQ,recentQ]);
+      if(activeErr||recentErr)return reply(503,{ok:false,error:'CHALLENGE_RATE_GATE_UNAVAILABLE'});
+      if((activeCount??0)>=MAX_ACTIVE_INTERNET_CHALLENGES_PER_DEVICE)return reply(429,{ok:false,error:'TOO_MANY_ACTIVE_APPROVAL_CHALLENGES',retryAfterSeconds:180});
+      if((recentCount??0)>0)return reply(429,{ok:false,error:'APPROVAL_CHALLENGE_COOLDOWN',retryAfterSeconds:15});
+      const opts=await generateAuthenticationOptions({rpID:RP_ID,allowCredentials:[{id:c.credential_id,transports:Array.isArray(c.transports)?c.transports:undefined}],userVerification:'required',timeout:120000});
+      const nonce=randomToken(32);const exp=new Date(Date.now()+3*60*1000).toISOString();
+      const {error:ne}=await sb.from('pm_owner_command_nonces_v1').insert({nonce,owner_user_id:d.owner_user_id,device_id:d.device_id,expires_at:exp,command_hash:payloadHash});
+      if(ne)return reply(500,{ok:false,error:'NONCE_CREATE_FAILED'});
+      const {data:ch,error:ce}=await sb.from('pm_owner_passkey_stepup_challenges_v1').insert({owner_user_id:d.owner_user_id,device_id:d.device_id,credential_id:c.credential_id,challenge:opts.challenge,expected_origin:OWNER_ORIGIN,expected_rp_id:RP_ID,expires_at:exp,evidence:{purpose:'INTERNET_PILOT_OWNER_APPROVAL',payload_hash:payloadHash,nonce,owner_user_id:d.owner_user_id,device_id:d.device_id,activation_scope:'TRANSPORT_PROOF_SINGLE_REQUEST',transport_proof_target_url:'https://example.com/',transport_proof_max_requests:1,authorize_owner_lockdown_release_for_transport_proof_only:true,owner_lockdown_release_max_seconds:120,general_production_network_authorized:false,mode:'APPROVAL_ONLY_NO_GRANT_NO_UNLOCK_NO_NETWORK',rate_gate:{max_active:MAX_ACTIVE_INTERNET_CHALLENGES_PER_DEVICE,cooldown_ms:CHALLENGE_COOLDOWN_MS}}}).select('challenge_id').single();
+      if(ce||!ch)return reply(500,{ok:false,error:'CHALLENGE_CREATE_FAILED'});
+      return reply(200,{ok:true,challengeId:ch.challenge_id,options:opts,pilot:{agent:'PAOJAI_OPERATIONS_AI',action:'PUBLIC_READ',minutes:10,risk:'LOW',canDelegate:false,activationScope:'TRANSPORT_PROOF_SINGLE_REQUEST',proofTarget:'https://example.com/',proofMaxRequests:1,lockdownReleaseMaxSeconds:120,generalProductionNetworkAuthorized:false},mode:'APPROVAL_ONLY_NO_GRANT_NO_UNLOCK_NO_NETWORK'});
+    }
+
+    if(action==='verify'){
+      const challengeId=String(b.challengeId||'');if(!challengeId||!b.credential)return reply(400,{ok:false,error:'INVALID_VERIFY_INPUT'});
+      const nowIso=new Date().toISOString();
+      const {data:ch}=await sb.from('pm_owner_passkey_stepup_challenges_v1').select('*').eq('challenge_id',challengeId).eq('owner_user_id',d.owner_user_id).eq('device_id',d.device_id).eq('expected_origin',OWNER_ORIGIN).eq('expected_rp_id',RP_ID).is('used_at',null).gt('expires_at',nowIso).maybeSingle();
+      if(!ch)return reply(410,{ok:false,error:'CHALLENGE_INVALID_OR_EXPIRED'});
+      if(ch.evidence?.purpose!=='INTERNET_PILOT_OWNER_APPROVAL'||ch.evidence?.payload_hash!==payloadHash||ch.evidence?.owner_user_id!==d.owner_user_id||ch.evidence?.device_id!==d.device_id||ch.evidence?.activation_scope!=='TRANSPORT_PROOF_SINGLE_REQUEST'||ch.evidence?.transport_proof_target_url!=='https://example.com/'||Number(ch.evidence?.transport_proof_max_requests)!==1||ch.evidence?.authorize_owner_lockdown_release_for_transport_proof_only!==true||Number(ch.evidence?.owner_lockdown_release_max_seconds)!==120||ch.evidence?.general_production_network_authorized!==false)return reply(403,{ok:false,error:'INTENT_BINDING_MISMATCH'});
+      const nonce=String(ch.evidence?.nonce||'');
+      const {data:n}=await sb.from('pm_owner_command_nonces_v1').select('*').eq('nonce',nonce).eq('owner_user_id',d.owner_user_id).eq('device_id',d.device_id).eq('command_hash',payloadHash).is('consumed_at',null).gt('expires_at',nowIso).maybeSingle();
+      if(!n)return reply(403,{ok:false,error:'NONCE_INVALID_OR_REPLAY'});
+
+      // This is the only cryptographic verification step. No caller-provided boolean is authority.
+      const v=await verifyAuthenticationResponse({response:b.credential,expectedChallenge:ch.challenge,expectedOrigin:OWNER_ORIGIN,expectedRPID:RP_ID,credential:{id:c.credential_id,publicKey:fromB64u(c.public_key_b64u),counter:Number(c.counter||0),transports:Array.isArray(c.transports)?c.transports:undefined},requireUserVerification:true});
+      if(!v.verified)return reply(403,{ok:false,error:'PASSKEY_NOT_VERIFIED'});
+      const newCounter=Number((v.authenticationInfo as any)?.newCounter??c.counter??0);
+      const {data:step,error:se}=await sb.rpc('pm_finalize_owner_passkey_stepup_v1',{p_owner_user_id:d.owner_user_id,p_device_id:d.device_id,p_challenge_id:ch.challenge_id,p_credential_id:c.credential_id,p_new_counter:newCounter,p_origin:OWNER_ORIGIN,p_rp_id:RP_ID,p_user_verified:true});
+      if(se||!step?.verified)return reply(403,{ok:false,error:'FRESH_OWNER_AUTH_BLOCKED'});
+
+      const issuedAt=new Date();const expiresAt=new Date(issuedAt.getTime()+3*60*1000);
+      const {data:cmd,error:ie}=await sb.from('pm_signed_owner_commands_v1').insert({owner_user_id:d.owner_user_id,device_id:d.device_id,command_type:'GRANT_CAPABILITY',action_scope:'PUBLIC_READ',resource_scope:{capability_key:'CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1',grantee_agent_key:'PAOJAI_OPERATIONS_AI',activation_scope:'TRANSPORT_PROOF_SINGLE_REQUEST',transport_proof_target_url:'https://example.com/',transport_proof_max_requests:1,authorize_owner_lockdown_release_for_transport_proof_only:true,owner_lockdown_release_max_seconds:120,general_production_network_authorized:false},canonical_payload:payload,payload_hash:payloadHash,nonce,issued_at:issuedAt.toISOString(),expires_at:expiresAt.toISOString(),signature:null,signature_algorithm:'WEBAUTHN_ASSERTION_VERIFIED_SERVER_SIDE',auth_age_seconds:0,risk_level:'LOW',verification_state:'UNVERIFIED',verification_reason:'PASSKEY_VERIFIED_AWAITING_CRYPTO_BOUND_GATEWAY_V2',verified_at:null}).select('command_id').single();
+      if(ie||!cmd)return reply(500,{ok:false,error:'SIGNED_COMMAND_RECORD_FAILED'});
+
+      // Critical v5 change: v2 independently reads the consumed step-up evidence + command binding.
+      // No p_signature_verified input exists here.
+      const {data:gate,error:ge}=await sb.rpc('pm_owner_command_gateway_v2',{p_command_id:cmd.command_id,p_source_component:'pm-owner-internet-pilot-approval-shadow-v5'});
+      if(ge||!gate?.allowed||!gate?.nonce_consumed||gate?.crypto_bound!==true){
+        await sb.from('pm_signed_owner_commands_v1').update({verification_state:'REJECTED',verification_reason:'CRYPTO_BOUND_GATEWAY_V2_BLOCKED',verified_at:null}).eq('command_id',cmd.command_id).eq('verification_state','UNVERIFIED');
+        return reply(403,{ok:false,error:'CRYPTO_BOUND_OWNER_COMMAND_GATEWAY_BLOCKED'});
+      }
+      const {data:promoted,error:ve}=await sb.from('pm_signed_owner_commands_v1').update({verification_state:'VERIFIED',verification_reason:'CRYPTO_BOUND_GATEWAY_V2',verified_at:new Date().toISOString()}).eq('command_id',cmd.command_id).eq('verification_state','UNVERIFIED').select('command_id').maybeSingle();
+      if(ve||!promoted)return reply(500,{ok:false,error:'VERIFIED_COMMAND_PROMOTION_FAILED'});
+      return reply(200,{ok:true,verified:true,commandId:cmd.command_id,approval:'RECORDED_ONLY_CRYPTO_BOUND_V2',grantCreated:false,ownerLockdownReleased:false,transportProofLaneEnabled:false,productionNetworkEnabled:false,mode:'APPROVAL_ONLY_NO_GRANT_NO_UNLOCK_NO_NETWORK'});
+    }
+    return reply(404,{ok:false,error:'UNKNOWN_ACTION'});
+  }catch(e){console.error('INTERNET_PILOT_APPROVAL_V5_FAILED',e);return reply(500,{ok:false,error:'INTERNET_PILOT_APPROVAL_V5_FAILED'})}
+});

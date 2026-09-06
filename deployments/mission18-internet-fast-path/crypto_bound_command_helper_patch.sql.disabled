@@ -1,0 +1,79 @@
+-- PRE-STAGED ONLY. DO NOT APPLY DURING FEATURE FREEZE.
+-- Must be applied/reviewed after owner_gateway_crypto_binding_patch.sql.disabled and before any
+-- bounded unlock/grant/reservation path is activated.
+--
+-- Purpose: make the Mission #18 transport helper accept ONLY a crypto-bound v2 gateway decision.
+-- It must never treat a legacy v1 gateway audit as Owner proof authority.
+
+create or replace function public.pm_internet_assert_verified_transport_command_v1(p_command_id uuid)
+returns public.pm_signed_owner_commands_v1
+language plpgsql
+security definer
+set search_path='public','pg_temp'
+as $$
+declare
+  c public.pm_signed_owner_commands_v1%rowtype;
+  a public.pm_owner_command_gateway_audit_v1%rowtype;
+begin
+  select * into c
+  from public.pm_signed_owner_commands_v1
+  where command_id=p_command_id
+    and verification_state='VERIFIED'
+    and verification_reason='CRYPTO_BOUND_GATEWAY_V2'
+    and verified_at is not null
+    and expires_at>now()
+    and command_type='GRANT_CAPABILITY'
+    and action_scope='PUBLIC_READ'
+    and risk_level='LOW'
+    and signature_algorithm='WEBAUTHN_ASSERTION_VERIFIED_SERVER_SIDE'
+    and canonical_payload->>'owner_user_id'=owner_user_id::text
+    and canonical_payload->>'device_id'=device_id::text
+    and canonical_payload->>'capability_key'='CONTROLLED_INTERNET_CAPABILITY_GATEWAY_V1'
+    and canonical_payload->>'grantee_agent_key'='PAOJAI_OPERATIONS_AI'
+    and canonical_payload->>'activation_scope'='TRANSPORT_PROOF_SINGLE_REQUEST'
+    and canonical_payload->>'transport_proof_target_url'='https://example.com/'
+    and coalesce((canonical_payload->>'transport_proof_max_requests')::int,0)=1
+    and coalesce((canonical_payload->>'requested_grant_minutes')::int,0) between 1 and 10
+    and coalesce((canonical_payload->>'can_delegate')::boolean,true)=false
+    and coalesce((canonical_payload->>'authorize_owner_lockdown_release_for_transport_proof_only')::boolean,false)=true
+    and coalesce((canonical_payload->>'owner_lockdown_release_max_seconds')::int,0) between 1 and 120
+    and coalesce((canonical_payload->>'general_production_network_authorized')::boolean,true)=false
+    and canonical_payload#>>'{allowed_resources,scheme}'='https'
+    and canonical_payload#>>'{allowed_resources,fixed_target_url}'='https://example.com/'
+    and coalesce((canonical_payload#>>'{allowed_resources,public_internet_only}')::boolean,false)=true
+    and coalesce((canonical_payload#>>'{allowed_resources,credentials}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,downloads}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,code_execution}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,external_side_effects}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,protected_data_egress}')::boolean,true)=false
+    and coalesce((canonical_payload#>>'{allowed_resources,cross_client_context}')::boolean,true)=false;
+  if not found then raise exception 'CRYPTO_BOUND_VERIFIED_TRANSPORT_PROOF_COMMAND_REQUIRED'; end if;
+
+  select * into a
+  from public.pm_owner_command_gateway_audit_v1
+  where command_key='internet-pilot:'||c.command_id::text
+    and owner_user_id=c.owner_user_id
+    and device_id=c.device_id
+    and nonce=c.nonce
+    and command_type='GRANT_CAPABILITY'
+    and risk_level='LOW'
+    and allowed=true
+    and nonce_consumed=true
+    and enforcement_enabled=true
+    and decision_code='ALLOW_CRYPTO_BOUND_V2'
+    and source_component='pm-owner-internet-pilot-approval-shadow-v5'
+  order by observed_at desc limit 1;
+  if not found then raise exception 'CRYPTO_BOUND_OWNER_GATEWAY_V2_AUDIT_REQUIRED'; end if;
+
+  return c;
+end;
+$$;
+
+revoke all on function public.pm_internet_assert_verified_transport_command_v1(uuid) from public, anon, authenticated;
+grant execute on function public.pm_internet_assert_verified_transport_command_v1(uuid) to service_role;
+
+-- Activation review must also verify:
+-- - pm_owner_command_gateway_v2 has NO signature_verified boolean parameter.
+-- - approval Edge v5+ performs server-side WebAuthn verification and calls only gateway v2.
+-- - crypto-binding readiness passes before Owner Passkey is requested.
+-- - legacy v1 gateway audits never satisfy this helper.

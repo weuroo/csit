@@ -1,0 +1,40 @@
+// PRE-STAGED ONLY. DO NOT RUN AS A DEPLOY HOOK DURING FEATURE FREEZE.
+// Validates that runtime concurrency proof evidence is server-derived and cannot be caller-forged.
+import fs from 'node:fs';
+const support=process.argv[2], harness=process.argv[3];
+if(!support||!harness) throw new Error('USAGE: node runtime_concurrency_static_check.mjs support.sql harness.ts');
+const s=fs.readFileSync(support,'utf8'), h=fs.readFileSync(harness,'utf8');
+const failures=[];
+const req=(src,t,l)=>{if(!src.includes(t))failures.push(`MISSING_${l}`)};
+const forbid=(src,t,l)=>{if(src.includes(t))failures.push(`FORBIDDEN_${l}`)};
+
+req(s,'pm_internet_concurrency_attempts_v1','SERVER_ATTEMPT_LEDGER');
+req(s,'proof_network_request_performed boolean not null default false check (proof_network_request_performed=false)','NETWORK_FLAG_DB_FALSE_ONLY');
+req(s,'pm_internet_concurrency_canary_reserve_v1(p_run_id uuid,p_request_token uuid)','RUN_BOUND_RESERVE');
+req(s,'pm_internet_record_concurrency_proof_v2(p_run_id uuid)','SERVER_DERIVED_RECORDER_V2');
+req(s,"'attempts_source','SERVER_SIDE_ATTEMPT_LEDGER'",'SERVER_DERIVED_EVIDENCE_MARKER');
+req(s,"'caller_supplied_results_accepted',false",'NO_CALLER_RESULTS_MARKER');
+req(s,"'caller_supplied_network_flag_accepted',false",'NO_CALLER_NETWORK_FLAG_MARKER');
+req(s,"reservation_function_sha256=current_hash",'CURRENT_RESERVATION_SHA_BINDING');
+req(s,"position('network_request_count=network_request_count+1' in compact)>0",'PRODUCTION_ATOMIC_INCREMENT_SHAPE');
+req(s,"position('network_request_count=0' in compact)>0",'PRODUCTION_ZERO_ONLY_SHAPE');
+req(s,"position($q$fixed_target_url='https://example.com/'$q$ in compact)>0",'PRODUCTION_TARGET_SHAPE');
+req(s,"real_lane_pristine",'REAL_LANE_PRISTINE_GATE');
+req(s,"owner_fail_closed",'OWNER_FAIL_CLOSED_GATE');
+forbid(s,'p_results jsonb','CALLER_RESULTS_PARAMETER');
+forbid(s,'p_proof_network_request_performed boolean','CALLER_NETWORK_BOOLEAN_PARAMETER');
+
+req(h,"PM_CONCURRENCY_HARNESS_TOKEN",'OPERATOR_ONLY_HARNESS_SECRET');
+req(h,"pm_internet_concurrency_canary_reset_v1",'RUN_RESET');
+req(h,"p_run_id:runId",'RUN_ID_PROPAGATION');
+req(h,"pm_internet_concurrency_canary_reserve_v1",'SIMULTANEOUS_RESERVE_CALLS');
+req(h,"pm_internet_record_concurrency_proof_v2",'RECORDER_V2_USAGE');
+req(h,"Promise.all",'CONCURRENT_CALLS');
+req(h,"evidence_server_derived===true",'SERVER_DERIVED_RESPONSE_REQUIRED');
+req(h,"proof_network_request_performed===false",'NO_PROOF_NETWORK_REQUIRED');
+forbid(h,'p_results:','HARNESS_CALLER_RESULTS');
+forbid(h,'p_proof_network_request_performed:','HARNESS_CALLER_NETWORK_FLAG');
+
+const result={passed:failures.length===0,support,harness,failures};
+console.log(JSON.stringify(result,null,2));
+if(failures.length) process.exit(1);

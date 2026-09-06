@@ -1,0 +1,25 @@
+// PRE-STAGED ONLY. DO NOT RUN AS A DEPLOY HOOK DURING FEATURE FREEZE.
+// Companion fail-closed check for proof_executor_candidate.ts.disabled.
+import fs from 'node:fs';
+const p=process.argv[2];
+if(!p) throw new Error('USAGE: node executor_runtime_authority_static_check.mjs executor');
+const s=fs.readFileSync(p,'utf8');
+const failures=[];
+const req=(t,l)=>{if(!s.includes(t))failures.push(`MISSING_${l}`)};
+req("pm_internet_assert_verified_transport_command_v1",'PERSISTED_OWNER_COMMAND_REASSERT');
+req('VERIFIED_OWNER_COMMAND_AND_CONSUMED_NONCE_REQUIRED','CONSUMED_NONCE_GATE');
+req('EXACTLY_ONE_ACTIVE_PUBLIC_READ_GRANT_REQUIRED','SINGLE_PUBLIC_READ_AUTHORITY');
+req("grant.risk_ceiling!=='LOW'",'LOW_RISK_ONLY');
+req('gx-vf>600_000','TEN_MINUTE_TTL_BOUND');
+req('gx>exp','GRANT_NOT_BEYOND_UNLOCK_WINDOW');
+req('GRANT_RESOURCE_SCOPE_NOT_EXACT','EXACT_RESOURCE_SCOPE');
+req("r.fixed_target_url||'')!==TARGET",'EXACT_TARGET_RUNTIME_BINDING');
+req('r.credentials!==false','NO_CREDENTIALS');
+req('r.downloads!==false','NO_DOWNLOADS');
+req('r.code_execution!==false','NO_CODE_EXECUTION');
+req('r.external_side_effects!==false','NO_EXTERNAL_SIDE_EFFECTS');
+req('r.protected_data_egress!==false','NO_PROTECTED_DATA_EGRESS');
+req('r.cross_client_context!==false','NO_CROSS_CLIENT_CONTEXT');
+const result={passed:failures.length===0,file:p,failures};
+console.log(JSON.stringify(result,null,2));
+if(failures.length)process.exit(1);

@@ -1,0 +1,79 @@
+-- PRE-STAGED ONLY. SAFE DURING FEATURE FREEZE ONLY AS READ/SHADOW TEST.
+-- Mission #18 pre-exit readiness audit. DO NOT enable network, unlock Owner Lockdown,
+-- create grants, consume request slots, or mutate Production authority.
+-- Re-run after Stabilization Exit before converting any disabled artifact into deployable code.
+
+select jsonb_build_object(
+  'stabilization', (
+    select to_jsonb(s)
+    from public.pm_stabilization_runs s
+    order by period_start desc
+    limit 1
+  ),
+  'gateway', (
+    select jsonb_build_object(
+      'mode', mode,
+      'owner_lockdown_active', owner_lockdown_active,
+      'production_network_enabled', production_network_enabled,
+      'updated_at', updated_at,
+      'updated_by', updated_by
+    )
+    from public.pm_owner_internet_gateway_control_shadow_v1
+    where control_key='CONTROLLED_INTERNET_GATEWAY'
+    limit 1
+  ),
+  'proof_lane', (
+    select jsonb_build_object(
+      'enabled', enabled,
+      'fixed_target_url', fixed_target_url,
+      'max_requests', max_requests,
+      'network_request_count', network_request_count,
+      'proof_completed', proof_completed,
+      'dns_pinning_evidence_collected', dns_pinning_evidence_collected,
+      'redirect_revalidation_evidence_collected', redirect_revalidation_evidence_collected
+    )
+    from public.pm_internet_transport_proof_lane_v1
+    where lane_key='CONTROLLED_INTERNET_TRANSPORT_PROOF'
+    limit 1
+  ),
+  'active_paojai_public_read_grants', (
+    select count(*)::int
+    from public.pm_agent_capability_grants_v1 g
+    where g.grantee_agent_key='PAOJAI_OPERATIONS_AI'
+      and g.status='ACTIVE'
+      and g.allowed_actions @> array['PUBLIC_READ']::text[]
+      and (g.expires_at is null or g.expires_at > now())
+  ),
+  'legacy_owner_gateway_crypto_binding', public.pm_owner_gateway_crypto_binding_readiness_v1(),
+  'preflight', public.pm_internet_pilot_preflight_readiness_v2(),
+  'post_freeze', public.pm_internet_post_freeze_implementation_readiness_v1(),
+  'contracts', public.pm_internet_post_freeze_contract_validation_v1(),
+  'authority', public.pm_internet_authority_surface_regression_v1(),
+  'concurrency', public.pm_internet_proof_lane_concurrency_readiness_v1(),
+  'atomic_shadow', public.pm_internet_atomic_reservation_shadow_regression_v1(),
+  'failure_policy', public.pm_internet_failed_request_slot_policy_shadow_regression_v1(),
+  'url_guard_example', public.pm_internet_url_guard_shadow_v1('https://example.com/'),
+  'ip_guard_public_shape', public.pm_internet_resolved_ip_guard_shadow_v1(array['93.184.216.34']::text[]),
+  'response_limits', public.pm_internet_response_limits_shadow_v1(500,1024),
+  'release_gate', public.pm_internet_executor_release_gate_check_v1(),
+  'activation_gate', public.pm_internet_transport_proof_activation_gate_v1(),
+  'transaction_plan', public.pm_internet_activation_transaction_plan_v1()
+) as mission18_pre_exit_readiness;
+
+-- Separate safety regressions intentionally create only regression evidence records;
+-- they do not authorize Mission #18 or permit network access.
+select public.pm_run_central_safety_regression_v2() as central_run_id;
+select public.pm_run_action_safety_regression_v3() as action_run_id;
+select public.pm_run_guardian_safety_regression() as guardian_run_id;
+
+-- Mandatory interpretation while Feature Freeze is active:
+-- * feature_freeze=true / autonomy_expansion_allowed=false => STOP before any authority-changing implementation.
+-- * owner_lockdown_active must remain true.
+-- * production_network_enabled must remain false.
+-- * active_paojai_public_read_grants must equal 0.
+-- * legacy_owner_gateway_crypto_binding is expected to remain blocked until the post-freeze v2 crypto-bound gateway replaces v1 for Mission #18; NEVER treat a passing caller-asserted signature path as authority.
+-- * authority passed=true with no exposed/unexpected write surface.
+-- * atomic_shadow and failure_policy must pass; these are NOT substitutes for runtime concurrency proof.
+-- * concurrency may remain false with PRODUCTION_ATOMIC_CONSUME_NOT_IMPLEMENTED until post-freeze implementation.
+-- * owner_action_required_now must remain false until all six technical implementation gaps are complete.
+-- * never treat this audit as Owner authorization.

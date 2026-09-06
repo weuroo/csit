@@ -1,0 +1,98 @@
+// PRE-STAGED ONLY. DO NOT DEPLOY OR RUN DURING FEATURE FREEZE.
+// Intended temporary Edge Function: pm-internet-concurrency-harness
+// Deploy only after Production atomic reservation support + canary SQL are applied.
+// This harness exercises only the isolated DB canary. It MUST NOT touch the real proof lane, Owner Lockdown,
+// grants, DNS resolution, example.com, or any external proof-network transport.
+//
+// Evidence hardening: the harness does NOT submit winners/losers/results or a network-performed boolean
+// to the proof recorder. Each reserve RPC writes its own server-side attempt row, and recorder v2 derives
+// the proof from those rows + isolated canary state + current Production reservation SHA/live fail-closed state.
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const sb=createClient(Deno.env.get('SUPABASE_URL')!,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,{auth:{persistSession:false,autoRefreshToken:false}});
+const CALLERS=8;
+const H={'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff'};
+const reply=(s:number,d:unknown)=>new Response(JSON.stringify(d),{status:s,headers:H});
+const enc=new TextEncoder();
+const equal=(a:string,b:string)=>{const aa=enc.encode(a),bb=enc.encode(b);if(aa.length!==bb.length)return false;let x=0;for(let i=0;i<aa.length;i++)x|=aa[i]^bb[i];return x===0};
+
+Deno.serve(async(req:Request)=>{
+  if(req.method!=='POST') return reply(405,{ok:false,error:'METHOD_NOT_ALLOWED'});
+
+  // verify_jwt=true is necessary but not sufficient: an ordinary authenticated JWT must never be able
+  // to invoke a service-role-backed runtime canary. Require a separate short-lived operator secret that
+  // is provisioned only for the temporary harness deployment and removed immediately after the run.
+  const expected=Deno.env.get('PM_CONCURRENCY_HARNESS_TOKEN')||'';
+  const supplied=req.headers.get('x-pm-concurrency-harness-token')||'';
+  if(expected.length<32||!equal(supplied,expected)) return reply(403,{ok:false,error:'HARNESS_OPERATOR_AUTH_REQUIRED'});
+
+  const runId=crypto.randomUUID();
+  const tokens=Array.from({length:CALLERS},()=>crypto.randomUUID());
+
+  // Reset only the isolated canary. No proof authority or real request slot is touched.
+  const {data:reset,error:resetErr}=await sb.rpc('pm_internet_concurrency_canary_reset_v1',{p_run_id:runId});
+  if(resetErr||!reset?.ok||reset?.run_id!==runId) return reply(500,{ok:false,error:'CANARY_RESET_FAILED'});
+
+  // These calls are intentionally simultaneous. Each RPC records its own server-side attempt row.
+  const calls=await Promise.all(tokens.map(async token=>{
+    const {data,error}=await sb.rpc('pm_internet_concurrency_canary_reserve_v1',{p_run_id:runId,p_request_token:token});
+    if(error) return {token,acquired:false,error:error.message};
+    return {token,acquired:!!data?.acquired,reason:data?.reason||null,proofNetworkRequestPerformed:false};
+  }));
+
+  // Recorder v2 accepts only run_id. Results/network flags cannot be supplied by this caller.
+  const {data:record,error:recordErr}=await sb.rpc('pm_internet_record_concurrency_proof_v2',{p_run_id:runId});
+  if(recordErr||!record) return reply(500,{ok:false,error:'CONCURRENCY_EVIDENCE_RECORD_FAILED'});
+
+  const localWinners=calls.filter(x=>x.acquired).length;
+  const localLosers=calls.filter(x=>!x.acquired).length;
+  const passed=record?.passed===true
+    && record?.evidence_server_derived===true
+    && Number(record?.callers)===CALLERS
+    && Number(record?.winners)===1
+    && Number(record?.losers)===CALLERS-1
+    && localWinners===1
+    && localLosers===CALLERS-1
+    && record?.production_reservation_atomic_shape_verified===true
+    && record?.real_proof_lane_pristine===true
+    && record?.owner_fail_closed===true
+    && record?.proof_network_request_performed===false;
+
+  return reply(passed?200:409,{
+    ok:passed,
+    passed,
+    runId,
+    callers:CALLERS,
+    serverDerivedCallers:Number(record?.callers||0),
+    serverDerivedWinners:Number(record?.winners||0),
+    serverDerivedLosers:Number(record?.losers||0),
+    localObservedWinners:localWinners,
+    localObservedLosers:localLosers,
+    evidenceServerDerived:record?.evidence_server_derived===true,
+    proofNetworkRequestPerformed:false,
+    realProofLanePristine:record?.real_proof_lane_pristine===true,
+    ownerFailClosed:record?.owner_fail_closed===true,
+    productionReservationAtomicShapeVerified:record?.production_reservation_atomic_shape_verified===true,
+    reservationFunctionSha256:record?.reservation_function_sha256||null,
+    reservationPolicy:'FAIL_CLOSED_CONSUME_ON_RESERVATION_NO_AUTORELEASE',
+    evidenceScope:'PRODUCTION_DB_RUNTIME_CONCURRENCY_CANARY_SERVER_DERIVED_NO_EXTERNAL_PROOF_NETWORK'
+  });
+});
+
+/* Mandatory deployment/run conditions:
+- Stabilization Exit verified; Feature Freeze cleared.
+- Production pm_internet_transport_proof_reserve_request_v1 deployed and contract/authority validated.
+- runtime_concurrency_support.sql.disabled reviewed and applied first.
+- Deploy this temporary harness with verify_jwt=true AND a fresh >=32-byte PM_CONCURRENCY_HARNESS_TOKEN.
+- Invoke only from the controlled operator path with x-pm-concurrency-harness-token; never expose the token to browser/client code.
+- No Owner Passkey is required because this does not use or mutate proof authority.
+- Exactly one canary winner is required in BOTH local responses and the server-derived attempt ledger.
+- The recorder accepts only run_id; caller-supplied result JSON and network flags are impossible by contract.
+- Real proof lane must remain disabled/pristine (count 0) and Owner Lockdown must remain true.
+- Production reservation atomic shape must match the reviewed conditional-update primitive and evidence is SHA-bound.
+- proofNetworkRequestPerformed must remain false.
+- After a passing run, delete/disable the temporary harness and remove PM_CONCURRENCY_HARNESS_TOKEN.
+- After a passing run, concurrency readiness is valid only while the recorded reservation-function SHA matches the current Production function definition.
+*/
