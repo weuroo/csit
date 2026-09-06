@@ -1,0 +1,9 @@
+.conversation-bg{padding:24px;overflow:hidden;align-items:center;justify-content:center}
+.conversation-bg.open{display:flex}
+.conversation{width:min(960px,94vw);height:min(78vh,760px);margin:0;background:#f7fbfb;border-radius:28px;padding:0;box-shadow:0 30px 90px rgba(0,0,0,.25);display:flex;flex-direction:column;overflow:hidden}
+.conversation-head{position:sticky;top:0;flex:0 0 auto;background:#f7fbfb;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:16px 18px 12px;border-bottom:1px solid #e3edef}
+.conversation h2{margin:0;font-size:19px}
+#convList{flex:1 1 auto;min-height:0;overflow:auto;padding:4px 18px 18px;scrollbar-gutter:stable}
+.thread{border-radius:16px;padding:11px 12px;margin:8px 0}
+.threadtitle{font-size:13px}.threadmeta{margin:4px 0 6px}.msg{padding:7px 9px;margin:4px 0;line-height:1.45}.threadsummary{margin-top:5px;line-height:1.45}
+@media(max-width:700px){.conversation-bg{padding:8px;align-items:flex-end}.conversation{width:100%;height:min(82vh,760px);min-height:0;border-radius:24px 24px 0 0}.conversation-head{padding:14px 14px 10px}#convList{padding:3px 12px calc(14px + var(--safe-b))}.thread{padding:10px;margin:7px 0}.conversation h2{font-size:18px}}
