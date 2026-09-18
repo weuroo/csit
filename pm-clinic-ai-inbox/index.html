@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0b10" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>PM Clinic AI Inbox</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Tahoma,sans-serif;background:#0b0b10;color:#f7f7fb}
+    button,input,select{font:inherit}.hidden{display:none!important}
+    .shell{max-width:1540px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}
+    h1{margin:0;font-size:28px}.sub{color:#9c9cac;margin-top:6px}.actions{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{border:1px solid #393949;background:#20202b;color:#fff;border-radius:10px;padding:10px 13px;cursor:pointer;font-weight:700}
+    .btn.primary{background:#7c3aed;border-color:#7c3aed}.btn.danger{background:#3b1717;border-color:#6b2525}.btn:disabled{opacity:.45;cursor:not-allowed}
+    .cards{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:12px;margin:20px 0}
+    .card{background:#15151e;border:1px solid #292938;border-radius:14px;padding:16px}.num{font-size:28px;font-weight:800}.lab{font-size:12px;color:#9c9cac;margin-top:4px}
+    .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0}.search{flex:1;min-width:260px;background:#111119;color:#fff;border:1px solid #313140;border-radius:10px;padding:12px 14px}
+    .filter{background:#111119;color:#fff;border:1px solid #313140;border-radius:10px;padding:12px}.notice{font-size:12px;color:#c7c7d5;background:#14141d;border:1px solid #2c2c3a;border-radius:10px;padding:10px 12px}
+    .tableWrap{overflow:auto;border:1px solid #292938;border-radius:14px;background:#101017}table{width:100%;border-collapse:collapse;min-width:1180px}
+    th,td{padding:12px;border-bottom:1px solid #242431;text-align:left;vertical-align:middle}th{position:sticky;top:0;background:#171721;font-size:12px;color:#a8a8b7;z-index:2}td{font-size:13px}
+    .name{font-weight:800}.small{font-size:11px;color:#858596}.badge{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800}
+    .ok{background:#123b25;color:#8df0b4}.off{background:#2b2b34;color:#aaa}.warn{background:#493716;color:#ffd789}
+    .owner,select.rowSelect{background:#0e0e15;color:#fff;border:1px solid #363645;border-radius:8px;padding:8px}.owner{width:190px}.rowSelect{min-width:120px}
+    .switch{position:relative;width:46px;height:26px;display:inline-block}.switch input{display:none}.slider{position:absolute;inset:0;background:#343442;border-radius:999px;cursor:pointer;transition:.2s}
+    .slider:before{content:"";position:absolute;width:20px;height:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}.switch input:checked+.slider{background:#7c3aed}.switch input:checked+.slider:before{transform:translateX(20px)}
+    .save{background:#27273b;color:#ddd;border:1px solid #3b3b51;border-radius:8px;padding:8px 10px;cursor:pointer}
+    .toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,90vw);background:#20202b;border:1px solid #3b3b4b;border-radius:12px;padding:12px 14px;display:none;z-index:20}
+    .login{min-height:100dvh;display:grid;place-items:center;padding:20px}.loginCard{width:min(430px,94vw);background:#161621;border:1px solid #2d2d3c;border-radius:20px;padding:28px;box-shadow:0 20px 60px #0008}
+    .loginCard h2{margin:0 0 6px;font-size:25px}.loginCard p{margin:0 0 18px;color:#9b9bab}.loginCard input{width:100%;background:#0f0f16;color:#fff;border:1px solid #3a3a49;border-radius:10px;padding:13px 14px}
+    .loginCard button{width:100%;margin-top:12px}.error{color:#ff9a9a;font-size:13px;margin-top:10px}
+    .mobileList{display:none}.mcard{background:#14141d;border:1px solid #292938;border-radius:14px;padding:14px;margin-bottom:10px}.mrow{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:10px}
+    .mcontrols{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.mcontrols input,.mcontrols select{width:100%;min-width:0}
+    @media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}.tableWrap{display:none}.mobileList{display:block}.shell{padding:14px}h1{font-size:24px}}
+  </style>
+</head>
+<body>
+  <section id="login" class="login">
+    <div class="loginCard">
+      <h2>PM Clinic AI Inbox</h2>
+      <p>Facebook Page Control Center</p>
+      <input id="accessCode" type="password" autocomplete="current-password" placeholder="Access code" />
+      <button id="loginBtn" class="btn primary">เข้าสู่ระบบ</button>
+      <div id="loginError" class="error"></div>
+    </div>
+  </section>
+
+  <main id="app" class="shell hidden">
+    <div class="top">
+      <div>
+        <h1>PM Clinic AI Inbox</h1>
+        <div class="sub">Facebook Page Control Center</div>
+      </div>
+      <div class="actions">
+        <button id="refreshBtn" class="btn">รีเฟรชข้อมูล</button>
+        <button id="logoutBtn" class="btn danger">ออกจากระบบ</button>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div id="statTotal" class="num">0</div><div class="lab">Pages ทั้งหมด</div></div>
+      <div class="card"><div id="statWebhook" class="num">0</div><div class="lab">Webhook Connected</div></div>
+      <div class="card"><div id="statConfirmed" class="num">0</div><div class="lab">Authorization Confirmed</div></div>
+      <div class="card"><div id="statCapture" class="num">0</div><div class="lab">Data Capture ON</div></div>
+      <div class="card"><div id="statAi" class="num">0</div><div class="lab">AI ON</div></div>
+    </div>
+
+    <div class="notice">ระบบจะเปิด Data Capture และ AI ได้ต่อเมื่อระบุ Data Owner และตั้ง Authorization = Confirmed ก่อน เพื่อไม่ให้ข้อมูลคนละคลินิกปะปนกัน</div>
+
+    <div class="toolbar">
+      <input id="search" class="search" placeholder="ค้นหาชื่อเพจ..." />
+      <select id="filter" class="filter">
+        <option value="all">ทั้งหมด</option>
+        <option value="webhook">Webhook ON</option>
+        <option value="confirmed">Authorization Confirmed</option>
+        <option value="capture">Data Capture ON</option>
+        <option value="ai">AI ON</option>
+      </select>
+    </div>
+
+    <div class="tableWrap">
+      <table>
+        <thead><tr><th>Page</th><th>Webhook</th><th>Data Owner</th><th>Authorization</th><th>Purpose</th><th>Data Capture</th><th>AI</th><th>Action</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div id="mobileList" class="mobileList"></div>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+<script>
+const API = "https://znfhwgxtenanfkldknil.supabase.co/functions/v1/pm-inbox-api";
+let accessCode = sessionStorage.getItem("pm_inbox_access") || "";
+let pages = [];
+let stats = {};
+
+const $ = (id)=>document.getElementById(id);
+const esc = (v)=>String(v ?? "").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+function showToast(msg, ok=true){const t=$("toast");t.textContent=msg;t.style.display="block";t.style.borderColor=ok?"#2c7":"#c44";setTimeout(()=>t.style.display="none",3200)}
+function badge(v){return v?'<span class="badge ok">ON</span>':'<span class="badge off">OFF</span>'}
+
+async function api(method="GET", body=null){
+  const r=await fetch(API,{method,headers:{"Authorization":"Bearer "+accessCode,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined,cache:"no-store"});
+  const j=await r.json().catch(()=>({error:"Unknown error"}));
+  if(!r.ok) throw new Error(j.error || ("HTTP "+r.status));
+  return j;
+}
+
+function applyStats(s){
+  stats=s||{};
+  $("statTotal").textContent=stats.total||0;
+  $("statWebhook").textContent=stats.webhook||0;
+  $("statConfirmed").textContent=stats.confirmed||0;
+  $("statCapture").textContent=stats.capture||0;
+  $("statAi").textContent=stats.ai||0;
+}
+
+function currentList(){
+  const q=$("search").value.trim().toLowerCase();
+  const f=$("filter").value;
+  return pages.filter(p=>{
+    const match=(p.page_name||"").toLowerCase().includes(q);
+    if(!match)return false;
+    if(f==="webhook")return p.webhook_subscribed;
+    if(f==="confirmed")return p.consent_status==="confirmed";
+    if(f==="capture")return p.data_collection_enabled;
+    if(f==="ai")return p.ai_enabled;
+    return true;
+  });
+}
+
+function render(){
+  const list=currentList();
+  $("rows").innerHTML=list.map(p=>`
+    <tr data-id="${esc(p.page_id)}">
+      <td><div class="name">${esc(p.page_name)}</div><div class="small">${esc(p.page_id)}</div></td>
+      <td>${badge(p.webhook_subscribed)}</td>
+      <td><input class="owner" value="${esc(p.data_owner||"")}" placeholder="เช่น K Wellness Clinic"></td>
+      <td><select class="rowSelect consent">
+        <option value="unverified" ${p.consent_status==="unverified"?"selected":""}>Unverified</option>
+        <option value="confirmed" ${p.consent_status==="confirmed"?"selected":""}>Confirmed</option>
+        <option value="revoked" ${p.consent_status==="revoked"?"selected":""}>Revoked</option>
+      </select></td>
+      <td><span class="small">${esc(p.data_purpose||"sales_support")}</span></td>
+      <td><label class="switch"><input class="capture" type="checkbox" ${p.data_collection_enabled?"checked":""}><span class="slider"></span></label></td>
+      <td><label class="switch"><input class="ai" type="checkbox" ${p.ai_enabled?"checked":""}><span class="slider"></span></label></td>
+      <td><button class="save">บันทึก Owner/สิทธิ์</button></td>
+    </tr>`).join("");
+
+  $("mobileList").innerHTML=list.map(p=>`
+    <div class="mcard" data-id="${esc(p.page_id)}">
+      <div class="name">${esc(p.page_name)}</div><div class="small">${esc(p.page_id)}</div>
+      <div class="mrow"><span>Webhook</span>${badge(p.webhook_subscribed)}</div>
+      <div class="mcontrols"><input class="owner" value="${esc(p.data_owner||"")}" placeholder="Data Owner"><select class="rowSelect consent">
+        <option value="unverified" ${p.consent_status==="unverified"?"selected":""}>Unverified</option>
+        <option value="confirmed" ${p.consent_status==="confirmed"?"selected":""}>Confirmed</option>
+        <option value="revoked" ${p.consent_status==="revoked"?"selected":""}>Revoked</option>
+      </select></div>
+      <div class="mrow"><span>Data Capture</span><label class="switch"><input class="capture" type="checkbox" ${p.data_collection_enabled?"checked":""}><span class="slider"></span></label></div>
+      <div class="mrow"><span>AI</span><label class="switch"><input class="ai" type="checkbox" ${p.ai_enabled?"checked":""}><span class="slider"></span></label></div>
+      <button class="save btn" style="margin-top:10px;width:100%">บันทึก Owner/สิทธิ์</button>
+    </div>`).join("");
+  bindRows();
+}
+
+function replacePage(updated){
+  const i=pages.findIndex(x=>x.page_id===updated.page_id);
+  if(i>=0) pages[i]=updated;
+  stats={
+    total:pages.length,
+    webhook:pages.filter(p=>p.webhook_subscribed).length,
+    confirmed:pages.filter(p=>p.consent_status==="confirmed").length,
+    capture:pages.filter(p=>p.data_collection_enabled).length,
+    ai:pages.filter(p=>p.ai_enabled).length
+  };
+  applyStats(stats);render();
+}
+
+function bindRows(){
+  document.querySelectorAll("[data-id]").forEach(el=>{
+    const id=el.dataset.id;
+    const save=el.querySelector(".save");
+    const capture=el.querySelector(".capture");
+    const ai=el.querySelector(".ai");
+    save.onclick=async()=>{
+      save.disabled=true;
+      try{
+        const d=await api("POST",{action:"governance",page_id:id,data_owner:el.querySelector(".owner").value,consent_status:el.querySelector(".consent").value});
+        replacePage(d.page);showToast("บันทึก Data Owner / Authorization แล้ว");
+      }catch(e){showToast(e.message,false)}finally{save.disabled=false}
+    };
+    capture.onchange=async(e)=>{
+      const wanted=e.target.checked;e.target.checked=!wanted;
+      try{const d=await api("POST",{action:"capture",page_id:id,value:wanted});replacePage(d.page);showToast("อัปเดต Data Capture แล้ว")}catch(err){showToast(err.message,false)}
+    };
+    ai.onchange=async(e)=>{
+      const wanted=e.target.checked;e.target.checked=!wanted;
+      try{const d=await api("POST",{action:"ai",page_id:id,value:wanted});replacePage(d.page);showToast("อัปเดต AI status แล้ว")}catch(err){showToast(err.message,false)}
+    };
+  });
+}
+
+async function load(){
+  const d=await api();
+  pages=d.pages||[];stats=d.stats||{};applyStats(stats);render();
+}
+
+async function login(){
+  const code=$("accessCode").value.trim();
+  if(!code)return;
+  accessCode=code;$("loginError").textContent="";
+  try{
+    await load();
+    sessionStorage.setItem("pm_inbox_access",accessCode);
+    $("login").classList.add("hidden");$("app").classList.remove("hidden");
+  }catch(e){
+    accessCode="";sessionStorage.removeItem("pm_inbox_access");$("loginError").textContent=e.message==="Unauthorized"?"Access code ไม่ถูกต้อง":e.message;
+  }
+}
+
+$("loginBtn").onclick=login;
+$("accessCode").addEventListener("keydown",e=>{if(e.key==="Enter")login()});
+$("logoutBtn").onclick=()=>{sessionStorage.removeItem("pm_inbox_access");location.reload()};
+$("refreshBtn").onclick=async()=>{try{await load();showToast("รีเฟรชข้อมูลแล้ว")}catch(e){showToast(e.message,false)}};
+$("search").addEventListener("input",render);$("filter").addEventListener("change",render);
+
+if(accessCode){load().then(()=>{$("login").classList.add("hidden");$("app").classList.remove("hidden")}).catch(()=>{sessionStorage.removeItem("pm_inbox_access");accessCode=""})}
+</script>
+</body>
+</html>
